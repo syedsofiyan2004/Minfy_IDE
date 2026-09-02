@@ -1,0 +1,9 @@
+{
+  "name": "sample-project",
+  "version": "1.0.0",
+  "description": "A sample project for Minfy IDE Milestone 1 verification",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "node src/index.ts"
+  }
+}

@@ -1,0 +1,360 @@
+MINFY IDE — MASTER PROJECT BRIEF
+You are working on a serious internal engineering product called Minfy IDE.
+This is NOT intended to be a quick AI wrapper, demo-only prototype, hackathon project, or AI-generated “slop” application.
+The objective is to gradually build a reliable, polished, browser-first intelligent development environment that can later be released internally at Minfy and potentially open-sourced.
+The application must prioritize:
+Genuine usefulness
+Excellent UI/UX
+Reliability
+Maintainable architecture
+Security
+Low AI/token cost
+Cross-platform compatibility
+Provider independence
+Extensibility
+Simplicity for developers
+
+PRODUCT NAME
+Minfy IDE
+
+BRAND DIRECTION
+The product should visually feel connected to Minfy Technologies.
+Primary visual direction:
+Blue as the dominant brand color
+Yellow as the accent/highlight color
+Neutral dark/light surfaces
+Professional enterprise appearance
+Modern developer-tool aesthetics
+Minimal visual clutter
+Strong typography
+Good spacing
+Clear hierarchy
+Smooth interactions
+Excellent dark mode
+Yellow must be used sparingly for important accents, statuses, highlights, focus states, or primary visual identity.
+Avoid making the UI look childish, overly colorful, overly futuristic, or like a generic AI-generated dashboard.
+The visual quality should feel comparable to polished developer products such as:
+VS Code
+Cursor
+Linear
+GitHub
+Raycast
+Vercel
+modern JetBrains tooling
+Do not directly copy any of them.
+
+PRODUCT VISION
+Minfy IDE should eventually allow a developer to open a project by running:
+minfy .
+similar to:
+code .
+The browser should open Minfy IDE with that local folder as the workspace.
+The IDE will eventually intelligently orchestrate:
+Claude
+Codex/OpenAI
+Gemini
+AWS Bedrock
+OpenRouter
+free AI routers/providers
+local models
+Ollama
+MCP servers
+enterprise AI resources
+future AI providers
+Users should not need to manually choose a model for every task.
+The system should eventually decide:
+whether AI is required at all
+what context is necessary
+which model/provider is most suitable
+whether a free/local option is sufficient
+whether escalation to a premium model is justified
+which MCP/tool is appropriate
+how much the task is expected to cost
+
+CORE ARCHITECTURAL PRINCIPLE
+Separate the system into clearly defined layers.
+Conceptually:
+Browser IDE↓Local Runtime↓Workspace / Repository Intelligence↓Context Compiler↓Task Planner↓AI Scheduler↓Provider Registry↓AI Providers / MCP / Local Models / Enterprise Models
+Do NOT tightly couple the user interface directly to Claude, OpenAI, Bedrock, or any individual provider.
+All providers must eventually sit behind internal interfaces/adapters.
+
+BROWSER-FIRST ARCHITECTURE
+The initial product is browser-first.
+However, it must be capable of working on a local project.
+Example:
+cd C:\Projects\my-app
+minfy .
+Expected flow:
+CLI resolves the workspace path.
+CLI starts or connects to the Minfy local runtime.
+Runtime registers the workspace.
+Runtime starts the local Minfy web application if necessary.
+Browser opens automatically.
+Browser connects to the local runtime.
+Project appears in Minfy IDE.
+User can browse/edit files.
+Terminal commands run on the local machine inside the workspace.
+Project files remain local unless explicitly required by an external AI provider.
+The browser is the UI.
+The local runtime handles privileged machine operations.
+Do not try to make the browser itself execute arbitrary host commands.
+
+LOCAL RUNTIME RESPONSIBILITIES
+Eventually the local runtime will handle:
+workspace registration
+filesystem
+file read/write
+terminal processes
+Git
+environment detection
+repository indexing
+Tree-sitter
+LSP interaction
+local cache
+local project metadata
+provider authentication
+local credentials
+MCP clients
+local AI
+AI routing
+context compilation
+task execution
+usage accounting
+security controls
+Do not implement all of these immediately.
+Build incrementally.
+
+LONG-TERM AI PRINCIPLE
+The best model choice can sometimes be:
+MODEL = NONE
+Examples:
+Finding a file:
+use filesystem/index
+Finding a symbol:
+use LSP/index
+Running tests:
+use test runner
+Checking compilation:
+use compiler exit status
+Finding changed lines:
+use Git
+Parsing JSON:
+use a parser
+AI should only be used when intelligence is actually required.
+
+TOKEN OPTIMIZATION GOAL
+A major future differentiator will be a Context Compiler.
+Instead of sending an entire repository to AI, Minfy IDE should eventually determine the minimum sufficient context.
+Potential future techniques:
+AST-aware retrieval
+symbol-level context
+dependency graphs
+file summaries
+function summaries
+diff-aware context
+cached context
+context deduplication
+tool-schema pruning
+structured model handoffs
+prompt compression
+provider cache awareness
+Do NOT implement these prematurely.
+
+AI PROVIDER ARCHITECTURE
+Providers should eventually support different integration types:
+OAuth
+subscription-backed CLI
+API keys
+AWS credentials
+enterprise credentials
+OpenAI-compatible APIs
+local models
+routers/gateways
+Potential integrations include:
+Codex
+Claude Code
+OpenAI API
+Anthropic API
+Gemini
+AWS Bedrock
+OpenRouter
+OmniRoute
+GoRouter
+AgentRouter
+Ollama
+LM Studio
+future providers
+Providers must eventually expose normalized capabilities.
+Example concepts:
+coding ability
+reasoning ability
+context size
+cost
+availability
+latency
+authentication type
+tool support
+vision support
+structured output support
+quota
+trust level
+Do not hard-code business logic around current model names.
+
+MCP
+Minfy IDE will eventually be an MCP host/client.
+Users should eventually be able to connect:
+AWS MCP
+GitHub MCP
+PostgreSQL MCP
+Kubernetes MCP
+Terraform MCP
+Jira MCP
+custom MCP servers
+The architecture should later support both:
+local stdio MCP
+remote HTTP MCP
+Project-level MCP configuration may eventually exist under something like:
+.minfy/mcp.json
+Never execute untrusted project MCP commands without explicit user approval.
+MCP is NOT part of the first milestone unless explicitly requested.
+
+SECURITY PRINCIPLES
+Security must be designed into the architecture.
+Important future principles:
+never expose raw provider secrets to the browser unnecessarily
+keep sensitive credentials in the local runtime
+scope workspace access
+prevent arbitrary path traversal
+validate terminal/workspace boundaries
+never automatically execute commands from cloned repositories
+require approval for dangerous operations
+treat free/unknown AI endpoints differently from trusted enterprise providers
+support future data classification and trust levels
+
+DEVELOPMENT PHILOSOPHY
+This project MUST be built incrementally.
+Never attempt to implement the whole architecture in one response/task.
+Each milestone must:
+introduce a small number of capabilities
+work end-to-end
+preserve existing functionality
+remain understandable
+avoid unnecessary abstractions
+avoid speculative infrastructure
+be manually usable
+provide a polished user experience
+
+TESTING PHILOSOPHY
+We want working software, not test bureaucracy.
+Testing should prioritize critical behavior.
+Do NOT create extremely strict testing gates that block development over trivial implementation details.
+Avoid:
+fragile snapshot tests
+testing cosmetic implementation details
+artificial 100% coverage requirements
+massive mock architectures
+tests coupled to internal function names
+excessive unit tests for trivial code
+huge lint/style rule sets that prevent iteration
+Prefer:
+smoke tests
+integration tests
+critical API tests
+filesystem safety tests
+workspace opening tests
+save/read tests
+terminal safety tests
+regression tests for bugs actually encountered
+A test should protect meaningful user behavior.
+
+ERROR-HANDLING PHILOSOPHY
+Do not hide errors.
+Do not crash the whole IDE because one operation fails.
+Show useful errors to users.
+Example:
+Bad:Error 500
+Better:Unable to save src/app.ts.The file may have been changed or the workspace is no longer available.
+Keep developer logs detailed while user-facing messages remain understandable.
+
+UI/UX PRINCIPLES
+UI/UX is a first-class requirement.
+Every feature must answer:
+Can the user discover it?
+Is the current state obvious?
+Is loading communicated?
+Is failure communicated?
+Is success communicated?
+Can mistakes be reversed?
+Are destructive actions clear?
+Is the interface visually consistent?
+Does the interface remain usable on common laptop resolutions?
+Does keyboard navigation make sense?
+Does the interface feel fast?
+Never bolt functionality into the interface without considering how a developer actually uses it.
+
+PERFORMANCE PRINCIPLES
+Avoid:
+re-reading the whole repository unnecessarily
+blocking the UI on slow filesystem operations
+sending huge API payloads
+loading thousands of files eagerly
+unnecessary re-renders
+repeated repository scans
+unnecessarily expensive AI calls
+Use incremental/lazy behavior where appropriate.
+
+CODE QUALITY
+Use:
+clear naming
+modular components
+strong typing
+small interfaces
+sensible folder structure
+meaningful comments only where necessary
+consistent error handling
+Avoid:
+giant files
+premature design patterns
+generic utils.ts dumping grounds
+duplicated business logic
+hundreds of tiny abstractions
+unused future-facing code
+massive configuration frameworks
+
+IMPORTANT WORKING RULE
+Before modifying code:
+inspect the current repository
+understand what already exists
+identify the minimum necessary change
+preserve existing working behavior
+After modifying code:
+run relevant checks
+run the application when possible
+inspect the actual user flow
+fix real failures
+summarize exactly what changed
+identify any remaining known limitations
+Never declare success only because code compiles.
+The actual feature should work.
+
+CHANGE CONTROL
+Do not modify unrelated areas of the repository.
+Do not perform large refactors unless they are necessary.
+If architectural debt is discovered but unrelated to the current milestone, document it instead of silently rewriting the project.
+
+WORKING STYLE
+When given a milestone:
+inspect repository
+explain briefly what exists
+identify implementation plan
+implement
+run relevant validation
+fix discovered issues
+review UX
+summarize completed work
+Do not continue into the next milestone automatically.
+Stop after the requested milestone is genuinely complete.
+
+MOST IMPORTANT RULE
+A smaller feature that works properly is better than ten half-working features.
+Minfy IDE must become useful through reliable vertical slices rather than a giant generated codebase.

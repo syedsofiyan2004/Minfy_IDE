@@ -1,0 +1,22 @@
+{
+  "name": "minfy-ide-root",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "cli"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev:runtime": "npm run dev --workspace=@minfy/runtime",
+    "dev:web": "npm run dev --workspace=@minfy/web",
+    "build:web": "npm run build --workspace=@minfy/web",
+    "build:runtime": "npm run build --workspace=@minfy/runtime",
+    "build:cli": "npm run build --workspace=@minfy/cli",
+    "test": "npm test --workspace=@minfy/runtime"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}
