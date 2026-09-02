@@ -1,0 +1,64 @@
+export type AIProviderType = 'local' | 'api' | 'subscription' | 'enterprise' | 'router';
+
+export type AIProviderStatus = 'available' | 'unavailable' | 'degraded' | 'checking';
+
+export interface AIProvider {
+  id: string;
+  name: string;
+  type: AIProviderType;
+  status: AIProviderStatus;
+  statusReason?: string;
+  endpoint?: string;
+  modelsCount?: number;
+}
+
+export interface AIModel {
+  id: string;
+  providerId: string;
+  displayName: string;
+  sizeBytes?: number;
+  contextWindow?: number;
+  supportsStreaming?: boolean;
+  supportsVision?: boolean;
+  supportsTools?: boolean;
+  family?: string;
+  parameterSize?: string;
+}
+
+export interface AIGenerateRequest {
+  providerId: string;
+  modelId: string;
+  prompt: string;
+  system?: string;
+  stream?: boolean;
+}
+
+export type AIStreamEventType = 'started' | 'text-delta' | 'completed' | 'error' | 'usage';
+
+export interface AIStreamEvent {
+  type: AIStreamEventType;
+  textDelta?: string;
+  error?: string;
+  usage?: AIUsage;
+}
+
+export interface AIUsage {
+  providerId: string;
+  modelId: string;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  inputTokenCount?: number;
+  outputTokenCount?: number;
+  status: 'completed' | 'cancelled' | 'error';
+  costDescription: string;
+}
+
+export interface AIProvidersResponse {
+  providers: AIProvider[];
+}
+
+export interface AIModelsResponse {
+  providerId: string;
+  models: AIModel[];
+}

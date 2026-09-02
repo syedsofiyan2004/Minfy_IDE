@@ -6,10 +6,10 @@ import { ActivityBar, ActivityView } from './components/ActivityBar/ActivityBar.
 import { FileTree } from './components/Explorer/FileTree.js';
 import { SourceControlView } from './components/SourceControl/SourceControlView.js';
 import { ProjectIntelligenceView } from './components/Project/ProjectIntelligenceView.js';
+import { AIPanel } from './components/AI/AIPanel.js';
 import { CodeEditor } from './components/Editor/CodeEditor.js';
 import { UnsavedChangesModal } from './components/Editor/UnsavedChangesModal.js';
 import { TerminalPanel } from './components/Terminal/TerminalPanel.js';
-import { AIPanelPlaceholder } from './components/Sidebar/AIPanelPlaceholder.js';
 import { WorkspaceSelector } from './components/WorkspaceSelector.js';
 import { ToastContainer, ToastMessage } from './components/Toast.js';
 
@@ -23,7 +23,7 @@ export function App() {
   const [recentWorkspaces, setRecentWorkspaces] = useState<Workspace[]>([]);
   const [runtimeConnected, setRuntimeConnected] = useState<boolean>(true);
 
-  // Active Sidebar View (Milestone 2 Activity Bar)
+  // Active Sidebar View (Milestone 2 & 3 Activity Bar)
   const [activeView, setActiveView] = useState<ActivityView>('explorer');
 
   // File tree state
@@ -49,7 +49,6 @@ export function App() {
 
   // Panels state
   const [terminalOpen, setTerminalOpen] = useState<boolean>(true);
-  const [aiPanelOpen, setAiPanelOpen] = useState<boolean>(false);
 
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -393,15 +392,15 @@ export function App() {
         runtimeConnected={runtimeConnected}
         terminalOpen={terminalOpen}
         onToggleTerminal={() => setTerminalOpen(!terminalOpen)}
-        aiPanelOpen={aiPanelOpen}
-        onToggleAiPanel={() => setAiPanelOpen(!aiPanelOpen)}
+        aiPanelOpen={activeView === 'ai'}
+        onToggleAiPanel={() => setActiveView(activeView === 'ai' ? 'explorer' : 'ai')}
         onRefreshWorkspace={workspace ? handleFullRefresh : undefined}
       />
 
       {/* Main Content Body */}
       {workspace ? (
         <div className="main-body">
-          {/* Leftmost Activity Bar (Milestone 2) */}
+          {/* Leftmost Activity Bar (Milestone 2 & 3) */}
           <ActivityBar
             activeView={activeView}
             onChangeView={setActiveView}
@@ -441,6 +440,10 @@ export function App() {
             />
           )}
 
+          {activeView === 'ai' && (
+            <AIPanel />
+          )}
+
           {/* Center Editor & Terminal Area */}
           <div className="editor-area-container">
             <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
@@ -464,12 +467,6 @@ export function App() {
               onClose={() => setTerminalOpen(false)}
             />
           </div>
-
-          {/* Right AI Panel (Milestone 1 Placeholder) */}
-          <AIPanelPlaceholder
-            isOpen={aiPanelOpen}
-            onClose={() => setAiPanelOpen(false)}
-          />
         </div>
       ) : (
         <WorkspaceSelector

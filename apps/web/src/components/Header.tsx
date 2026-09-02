@@ -147,19 +147,21 @@ export const Header: React.FC<HeaderProps> = ({
           <span>Terminal</span>
         </button>
 
-        {/* AI Assistant Toggle Button (Placeholder) */}
+        {/* AI Assistant Toggle Button */}
         <button
           onClick={onToggleAiPanel}
           style={{
             padding: '4px 10px',
             borderRadius: '4px',
-            backgroundColor: aiPanelOpen ? 'var(--surface-4)' : 'var(--surface-3)',
-            color: aiPanelOpen ? 'var(--minfy-yellow-accent)' : 'var(--text-muted)',
-            border: '1px solid var(--border-subtle)',
+            backgroundColor: aiPanelOpen ? 'rgba(250, 204, 21, 0.15)' : 'var(--surface-3)',
+            color: aiPanelOpen ? 'var(--minfy-yellow-accent)' : 'var(--text-secondary)',
+            border: '1px solid',
+            borderColor: aiPanelOpen ? 'var(--minfy-yellow-accent)' : 'var(--border-subtle)',
             fontSize: '12px',
             gap: '6px',
+            fontWeight: 500,
           }}
-          title="Toggle AI Panel (Milestone 2+)"
+          title="Toggle AI Assistant (Ollama Local)"
         >
           <Sparkles size={13} color={aiPanelOpen ? 'var(--minfy-yellow-accent)' : 'var(--text-muted)'} />
           <span>AI</span>

@@ -9,6 +9,7 @@ import { CONFIG } from './config.js';
 import { workspaceRouter } from './routes/workspaceRoutes.js';
 import { fileRouter } from './routes/fileRoutes.js';
 import { intelligenceRouter } from './routes/intelligenceRoutes.js';
+import { aiRouter } from './routes/aiRoutes.js';
 import { workspaceService } from './services/workspaceService.js';
 import { terminalService } from './services/terminalService.js';
 import { RuntimeStatusResponse, ApiResponse } from '@minfy/shared';
@@ -41,6 +42,7 @@ app.get('/api/status', (_req, res: express.Response<ApiResponse<RuntimeStatusRes
 });
 
 // Routes
+app.use('/api/ai', aiRouter);
 app.use('/api/workspaces', workspaceRouter);
 app.use('/api/workspaces/:id/intelligence', intelligenceRouter);
 app.use('/api/workspaces/:id', fileRouter);

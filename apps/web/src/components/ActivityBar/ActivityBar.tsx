@@ -1,7 +1,7 @@
 import React from 'react';
-import { Files, GitBranch, Layers } from 'lucide-react';
+import { Files, GitBranch, Layers, Sparkles } from 'lucide-react';
 
-export type ActivityView = 'explorer' | 'source-control' | 'project';
+export type ActivityView = 'explorer' | 'source-control' | 'project' | 'ai';
 
 interface ActivityBarProps {
   activeView: ActivityView;
@@ -140,6 +140,36 @@ export const ActivityBar: React.FC<ActivityBarProps> = ({
           />
         )}
         <Layers size={18} />
+      </button>
+
+      {/* AI Provider Action (Milestone 3) */}
+      <button
+        onClick={() => onChangeView('ai')}
+        title="AI Assistant (Ollama Local)"
+        style={{
+          width: '38px',
+          height: '38px',
+          borderRadius: '6px',
+          backgroundColor: activeView === 'ai' ? 'var(--surface-2)' : 'transparent',
+          color: activeView === 'ai' ? 'var(--minfy-yellow-accent)' : 'var(--text-muted)',
+          position: 'relative',
+          marginBottom: '4px',
+        }}
+      >
+        {activeView === 'ai' && (
+          <div
+            style={{
+              position: 'absolute',
+              left: '-3px',
+              top: '8px',
+              bottom: '8px',
+              width: '2px',
+              backgroundColor: 'var(--minfy-blue-primary)',
+              borderRadius: '0 2px 2px 0',
+            }}
+          />
+        )}
+        <Sparkles size={18} />
       </button>
     </aside>
   );

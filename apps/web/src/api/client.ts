@@ -7,6 +7,11 @@ import {
   CreateEntryResponse,
   RuntimeStatusResponse,
   ProjectIntelligence,
+  AIProvidersResponse,
+  AIModelsResponse,
+  AIGenerateRequest,
+  AIStreamEvent,
+  AIUsage,
 } from '@minfy/shared';
 
 const API_BASE = '/api';
@@ -95,5 +100,70 @@ export const api = {
     return fetchJson<ProjectIntelligence>(`${API_BASE}/workspaces/${workspaceId}/intelligence/refresh`, {
       method: 'POST',
     });
+  },
+
+  // AI Provider Foundation (Milestone 3)
+  listAIProviders: async (): Promise<AIProvidersResponse> => {
+    return fetchJson<AIProvidersResponse>(`${API_BASE}/ai/providers`);
+  },
+
+  listAIModels: async (providerId: string): Promise<AIModelsResponse> => {
+    return fetchJson<AIModelsResponse>(`${API_BASE}/ai/providers/${encodeURIComponent(providerId)}/models`);
+  },
+
+  streamAIGenerate: async (
+    request: AIGenerateRequest,
+    onEvent: (event: AIStreamEvent) => void,
+    abortSignal?: AbortSignal
+  ): Promise<void> => {
+    const res = await fetch(`${API_BASE}/ai/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+      signal: abortSignal,
+    });
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => null);
+      throw new Error(errJson?.error || `Generation request failed with HTTP ${res.status}`);
+    }
+
+    if (!res.body) {
+      throw new Error('No response stream available');
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      if (abortSignal?.aborted) {
+        reader.cancel().catch(() => {});
+        break;
+      }
+
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (trimmed.startsWith('data: ')) {
+          try {
+            const event: AIStreamEvent = JSON.parse(trimmed.slice(6));
+            onEvent(event);
+          } catch {
+            // ignore partial json
+          }
+        }
+      }
+    }
+  },
+
+  getAIUsage: async (): Promise<{ history: AIUsage[] }> => {
+    return fetchJson<{ history: AIUsage[] }>(`${API_BASE}/ai/usage`);
   },
 };
