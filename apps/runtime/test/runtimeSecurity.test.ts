@@ -17,7 +17,7 @@ import {
   WindowsCredentialBackend,
 } from '../src/services/credentialStore.js';
 
-describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2)', () => {
+describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2.1)', () => {
   const validToken = runtimeAuthService.getToken();
   let server: http.Server;
   let testPort: number;
@@ -28,7 +28,7 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2)', (
     app.use(corsOriginMiddleware);
     app.use(express.json());
 
-    // Public endpoint
+    // Public health probe endpoint
     app.get('/api/health', (_req, res) => {
       res.json({ status: 'ok' });
     });
@@ -88,17 +88,21 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2)', (
     assert.strictEqual(isAllowedHost(undefined, port), false);
   });
 
-  test('CORS origin validation accepts loopback origins and rejects foreign browser origins', () => {
+  test('Tightened Origin policy accepts runtime and dev ports while rejecting unapproved localhost ports and foreign web origins', () => {
     const port = 4560;
     // No origin (CLI, curl, direct same-origin requests) is allowed
     assert.strictEqual(isAllowedOrigin(undefined, port), true);
     assert.strictEqual(isAllowedOrigin('', port), true);
 
-    // Trusted loopback development origins allowed
+    // Exact runtime port and approved Vite dev origins allowed
     assert.strictEqual(isAllowedOrigin(`http://127.0.0.1:${port}`, port), true);
     assert.strictEqual(isAllowedOrigin(`http://localhost:${port}`, port), true);
     assert.strictEqual(isAllowedOrigin('http://localhost:5173', port), true);
     assert.strictEqual(isAllowedOrigin('http://127.0.0.1:5173', port), true);
+
+    // Unapproved arbitrary localhost ports rejected
+    assert.strictEqual(isAllowedOrigin('http://localhost:9999', port), false);
+    assert.strictEqual(isAllowedOrigin('http://127.0.0.1:8080', port), false);
 
     // Foreign web origins strictly rejected
     assert.strictEqual(isAllowedOrigin('https://evil.example', port), false);
@@ -149,30 +153,31 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2)', (
     assert.strictEqual(json.error, 'Forbidden Origin.');
   });
 
-  test('Terminal ticket endpoint requires runtime auth and generates single-use ticket', async () => {
-    // 1. Unauthenticated ticket request rejected
-    const unauthRes = await fetch(`http://127.0.0.1:${testPort}/api/workspaces/ws-123/terminal-ticket`, {
-      method: 'POST',
-    });
-    assert.strictEqual(unauthRes.status, 401);
+  test('Terminal ticket service enforces single-use, TTL expiration, invalid rejection, and workspace binding', async () => {
+    const ticketService = new terminalTicketService.constructor(500); // 500ms TTL
 
-    // 2. Authenticated ticket request succeeds
-    const authRes = await fetch(`http://127.0.0.1:${testPort}/api/workspaces/ws-123/terminal-ticket`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${validToken}` },
-    });
-    assert.strictEqual(authRes.status, 200);
-    const { data } = await authRes.json();
-    assert.ok(data.ticket);
+    // 1. Invalid ticket rejected
+    assert.strictEqual(ticketService.consumeTicket('invalid-candidate').valid, false);
+    assert.strictEqual(ticketService.consumeTicket(undefined).valid, false);
 
-    // 3. Ticket consumption binds to workspace
-    const consumed = terminalTicketService.consumeTicket(data.ticket);
-    assert.strictEqual(consumed.valid, true);
-    assert.strictEqual(consumed.workspaceId, 'ws-123');
+    // 2. Ticket generation
+    const { ticket, expiresAt } = ticketService.createTicket('ws-lifecycle-test');
+    assert.ok(ticket && ticket.length >= 32);
+    assert.ok(expiresAt > Date.now());
 
-    // 4. Reuse rejected
-    const reused = terminalTicketService.consumeTicket(data.ticket);
-    assert.strictEqual(reused.valid, false);
+    // 3. Single-use consumption succeeds and returns bound workspace
+    const res1 = ticketService.consumeTicket(ticket);
+    assert.strictEqual(res1.valid, true);
+    assert.strictEqual(res1.workspaceId, 'ws-lifecycle-test');
+
+    // 4. Ticket reuse fails
+    const res2 = ticketService.consumeTicket(ticket);
+    assert.strictEqual(res2.valid, false);
+
+    // 5. Expired ticket fails
+    const { ticket: expTicket } = ticketService.createTicket('ws-expired-test');
+    await new Promise((r) => setTimeout(r, 600));
+    assert.strictEqual(ticketService.consumeTicket(expTicket).valid, false);
   });
 
   test('Windows Credential backend reports windows-dpapi vault and truthful metadata', () => {
@@ -183,7 +188,6 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2)', (
   });
 
   test('CredentialStore downgrades backendInfo to session memory if native write fails', async () => {
-    // Failing backend test double
     const failingBackend: ICredentialBackend = {
       type: 'windows-dpapi',
       name: 'Failing Windows Vault',
@@ -198,10 +202,8 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2)', (
     assert.strictEqual(store.backendInfo().type, 'windows-dpapi');
     assert.strictEqual(store.backendInfo().isPersistent, true);
 
-    // Trigger set failure
     await store.set('test-prov', 'sk-or-fallback');
 
-    // Verification: BackendInfo MUST now truthfully reflect Memory Fallback and NOT claim persistence
     const info = store.backendInfo();
     assert.strictEqual(info.type, 'memory');
     assert.strictEqual(info.isPersistent, false);

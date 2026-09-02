@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { CONFIG } from '../config.js';
 import { runtimeAuthService } from '../services/runtimeAuthService.js';
 
-export function isAllowedHost(hostHeader?: string): boolean {
+export function isAllowedHost(hostHeader?: string, port: number = CONFIG.PORT): boolean {
   if (!hostHeader) return false;
   const clean = hostHeader.trim().toLowerCase();
 
@@ -20,8 +20,8 @@ export function isAllowedHost(hostHeader?: string): boolean {
   return validHostnames.includes(hostPart);
 }
 
-export function isAllowedOrigin(originHeader?: string): boolean {
-  if (!originHeader) return true; // No origin (CLI, curl, same-origin relative requests)
+export function isAllowedOrigin(originHeader?: string, port: number = CONFIG.PORT): boolean {
+  if (!originHeader) return true; // No origin (CLI, curl, direct same-origin requests)
   const clean = originHeader.trim().toLowerCase();
 
   try {
@@ -31,16 +31,30 @@ export function isAllowedOrigin(originHeader?: string): boolean {
     }
 
     const hostname = url.hostname.toLowerCase();
+    const originPort = url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80);
+
+    // 1. Exact match for current runtime port on loopback
     const validLoopbacks = ['127.0.0.1', 'localhost', '[::1]', '::1'];
-    if (validLoopbacks.includes(hostname)) {
+    if (validLoopbacks.includes(hostname) && originPort === port) {
       return true;
     }
 
+    // 2. Explicit approved dev origins
     if (process.env.MINFY_ALLOWED_DEV_ORIGINS) {
       const custom = process.env.MINFY_ALLOWED_DEV_ORIGINS.split(',')
         .map((s) => s.trim().toLowerCase())
         .filter(Boolean);
       if (custom.includes(clean)) {
+        return true;
+      }
+    } else {
+      // Default Vite dev ports for local IDE development
+      const viteDevOrigins = [
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        'http://[::1]:5173',
+      ];
+      if (viteDevOrigins.includes(clean)) {
         return true;
       }
     }
@@ -56,7 +70,7 @@ export function isAllowedOrigin(originHeader?: string): boolean {
  */
 export const hostValidationMiddleware = (req: Request, res: Response, next: NextFunction) => {
   const host = req.headers.host;
-  if (!isAllowedHost(host)) {
+  if (!isAllowedHost(host, CONFIG.PORT)) {
     return res.status(403).json({
       success: false,
       error: 'Invalid or forbidden Host header.',
@@ -72,7 +86,7 @@ export const corsOriginMiddleware = (req: Request, res: Response, next: NextFunc
   const origin = req.headers.origin;
 
   if (origin) {
-    if (!isAllowedOrigin(origin)) {
+    if (!isAllowedOrigin(origin, CONFIG.PORT)) {
       return res.status(403).json({
         success: false,
         error: 'Forbidden Origin.',

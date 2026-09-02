@@ -39,31 +39,36 @@ export class RuntimeAuthService {
   }
 
   public saveRuntimeState(port: number = CONFIG.PORT): void {
+    if (!fs.existsSync(CONFIG.DATA_DIR)) {
+      fs.mkdirSync(CONFIG.DATA_DIR, { recursive: true });
+    }
+
+    const state: RuntimeState = {
+      port,
+      pid: process.pid,
+      token: this.token,
+      startedAt: new Date().toISOString(),
+    };
+
     try {
-      if (!fs.existsSync(CONFIG.DATA_DIR)) {
-        fs.mkdirSync(CONFIG.DATA_DIR, { recursive: true });
-      }
-
-      const state: RuntimeState = {
-        port,
-        pid: process.pid,
-        token: this.token,
-        startedAt: new Date().toISOString(),
-      };
-
       fs.writeFileSync(this.stateFilePath, JSON.stringify(state, null, 2), {
         encoding: 'utf-8',
         mode: 0o600, // Owner read/write only
       });
-    } catch (err) {
-      console.warn('[RuntimeAuthService] Could not save runtime state file:', err);
+    } catch (err: any) {
+      throw new Error(`Failed to initialize secure runtime state file: ${err.message}`);
     }
   }
 
   public cleanup(): void {
     try {
       if (fs.existsSync(this.stateFilePath)) {
-        fs.unlinkSync(this.stateFilePath);
+        const raw = fs.readFileSync(this.stateFilePath, 'utf-8');
+        const existingState = JSON.parse(raw);
+        // Only delete if the state file belongs to THIS specific runtime instance
+        if (existingState && existingState.pid === process.pid && existingState.token === this.token) {
+          fs.unlinkSync(this.stateFilePath);
+        }
       }
     } catch {}
   }
