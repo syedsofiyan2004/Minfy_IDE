@@ -6,18 +6,25 @@ export function isAllowedHost(hostHeader?: string, port: number = CONFIG.PORT): 
   if (!hostHeader) return false;
   const clean = hostHeader.trim().toLowerCase();
 
-  let hostPart = clean;
-  if (clean.startsWith('[')) {
-    const closeBracket = clean.indexOf(']');
-    if (closeBracket !== -1) {
-      hostPart = clean.substring(0, closeBracket + 1);
-    }
-  } else if (clean.includes(':')) {
-    hostPart = clean.split(':')[0];
-  }
+  try {
+    const url = new URL(`http://${clean}`);
+    const validHostnames = ['127.0.0.1', 'localhost', '[::1]', '::1'];
 
-  const validHostnames = ['127.0.0.1', 'localhost', '[::1]', '::1'];
-  return validHostnames.includes(hostPart);
+    if (!validHostnames.includes(url.hostname)) {
+      return false;
+    }
+
+    // If port is specified in Host header, it must match the expected port
+    if (url.port) {
+      const parsedPort = parseInt(url.port, 10);
+      return parsedPort === port;
+    }
+
+    // Direct loopback host without explicit port
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function isAllowedOrigin(originHeader?: string, port: number = CONFIG.PORT): boolean {
@@ -47,8 +54,8 @@ export function isAllowedOrigin(originHeader?: string, port: number = CONFIG.POR
       if (custom.includes(clean)) {
         return true;
       }
-    } else {
-      // Default Vite dev ports for local IDE development
+    } else if (process.env.NODE_ENV !== 'production') {
+      // Default Vite dev ports allowed only in development mode
       const viteDevOrigins = [
         'http://localhost:5173',
         'http://127.0.0.1:5173',
@@ -70,7 +77,8 @@ export function isAllowedOrigin(originHeader?: string, port: number = CONFIG.POR
  */
 export const hostValidationMiddleware = (req: Request, res: Response, next: NextFunction) => {
   const host = req.headers.host;
-  if (!isAllowedHost(host, CONFIG.PORT)) {
+  const boundPort = req.socket?.localPort || CONFIG.PORT;
+  if (!isAllowedHost(host, boundPort)) {
     return res.status(403).json({
       success: false,
       error: 'Invalid or forbidden Host header.',
@@ -84,9 +92,10 @@ export const hostValidationMiddleware = (req: Request, res: Response, next: Next
  */
 export const corsOriginMiddleware = (req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
+  const boundPort = req.socket?.localPort || CONFIG.PORT;
 
   if (origin) {
-    if (!isAllowedOrigin(origin, CONFIG.PORT)) {
+    if (!isAllowedOrigin(origin, boundPort)) {
       return res.status(403).json({
         success: false,
         error: 'Forbidden Origin.',

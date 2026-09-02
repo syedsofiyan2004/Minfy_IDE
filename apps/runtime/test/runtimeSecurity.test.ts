@@ -17,7 +17,7 @@ import {
   WindowsCredentialBackend,
 } from '../src/services/credentialStore.js';
 
-describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2.1)', () => {
+describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2.2)', () => {
   const validToken = runtimeAuthService.getToken();
   let server: http.Server;
   let testPort: number;
@@ -72,15 +72,21 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2.1)',
     assert.strictEqual(runtimeAuthService.verifyToken(undefined), false);
   });
 
-  test('Host validation accepts valid loopback hosts and rejects external/rebound hosts', () => {
+  test('Host validation accepts valid loopback hosts with matching port and rejects port mismatches / external hosts', () => {
     const port = 4560;
+    // Accepted valid loopbacks with matching port
     assert.strictEqual(isAllowedHost(`127.0.0.1:${port}`, port), true);
     assert.strictEqual(isAllowedHost(`localhost:${port}`, port), true);
     assert.strictEqual(isAllowedHost(`[::1]:${port}`, port), true);
     assert.strictEqual(isAllowedHost('127.0.0.1', port), true);
     assert.strictEqual(isAllowedHost('localhost', port), true);
 
-    // Reject DNS rebinding and foreign hosts
+    // Rejected loopbacks with wrong port
+    assert.strictEqual(isAllowedHost('localhost:9999', port), false);
+    assert.strictEqual(isAllowedHost('127.0.0.1:9999', port), false);
+    assert.strictEqual(isAllowedHost('[::1]:9999', port), false);
+
+    // Rejected DNS rebinding, LAN IPs, and foreign hosts
     assert.strictEqual(isAllowedHost('evil.example:4560', port), false);
     assert.strictEqual(isAllowedHost('attacker.com', port), false);
     assert.strictEqual(isAllowedHost('192.168.1.50:4560', port), false);
@@ -88,17 +94,15 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2.1)',
     assert.strictEqual(isAllowedHost(undefined, port), false);
   });
 
-  test('Tightened Origin policy accepts runtime and dev ports while rejecting unapproved localhost ports and foreign web origins', () => {
+  test('Tightened Origin policy accepts runtime loopback and environment dev ports while rejecting unapproved origins', () => {
     const port = 4560;
     // No origin (CLI, curl, direct same-origin requests) is allowed
     assert.strictEqual(isAllowedOrigin(undefined, port), true);
     assert.strictEqual(isAllowedOrigin('', port), true);
 
-    // Exact runtime port and approved Vite dev origins allowed
+    // Exact runtime port allowed
     assert.strictEqual(isAllowedOrigin(`http://127.0.0.1:${port}`, port), true);
     assert.strictEqual(isAllowedOrigin(`http://localhost:${port}`, port), true);
-    assert.strictEqual(isAllowedOrigin('http://localhost:5173', port), true);
-    assert.strictEqual(isAllowedOrigin('http://127.0.0.1:5173', port), true);
 
     // Unapproved arbitrary localhost ports rejected
     assert.strictEqual(isAllowedOrigin('http://localhost:9999', port), false);
@@ -108,6 +112,29 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2.1)',
     assert.strictEqual(isAllowedOrigin('https://evil.example', port), false);
     assert.strictEqual(isAllowedOrigin('http://malicious-site.com', port), false);
     assert.strictEqual(isAllowedOrigin('https://attacker.io:4560', port), false);
+  });
+
+  test('Production mode rejects Vite dev origins by default unless explicitly configured in MINFY_ALLOWED_DEV_ORIGINS', () => {
+    const origEnv = process.env.NODE_ENV;
+    const origCustom = process.env.MINFY_ALLOWED_DEV_ORIGINS;
+
+    try {
+      process.env.NODE_ENV = 'production';
+      delete process.env.MINFY_ALLOWED_DEV_ORIGINS;
+
+      // In production without explicit config, Vite dev origin 5173 is rejected
+      assert.strictEqual(isAllowedOrigin('http://localhost:5173', 4560), false);
+      assert.strictEqual(isAllowedOrigin('http://127.0.0.1:5173', 4560), false);
+
+      // Explicitly configuring MINFY_ALLOWED_DEV_ORIGINS permits specific origin
+      process.env.MINFY_ALLOWED_DEV_ORIGINS = 'http://localhost:5173,http://custom-dev:3000';
+      assert.strictEqual(isAllowedOrigin('http://localhost:5173', 4560), true);
+      assert.strictEqual(isAllowedOrigin('http://custom-dev:3000', 4560), true);
+      assert.strictEqual(isAllowedOrigin('http://localhost:9999', 4560), false);
+    } finally {
+      process.env.NODE_ENV = origEnv;
+      process.env.MINFY_ALLOWED_DEV_ORIGINS = origCustom;
+    }
   });
 
   test('GET /api/health succeeds without authentication', async () => {
