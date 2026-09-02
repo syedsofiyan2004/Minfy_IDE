@@ -51,6 +51,8 @@ app.get('/api/status', (_req, res: express.Response<ApiResponse<RuntimeStatusRes
       version: CONFIG.VERSION,
       platform: process.platform,
       workspacesCount: workspaceService.listWorkspaces().length,
+      pid: process.pid,
+      runtimeInstanceId: runtimeAuthService.getRuntimeInstanceId(),
     },
   });
 });
@@ -114,19 +116,39 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 // Start Server strictly bound to loopback
-export async function startServer(port: number = CONFIG.PORT, host: string = CONFIG.HOST): Promise<http.Server> {
+export async function startServer(
+  port: number = CONFIG.PORT,
+  host: string = CONFIG.HOST,
+  maxRetries: number = 6
+): Promise<http.Server> {
   await credentialStore.loadInitialCredentials(['openrouter']).catch(() => {});
 
-  return new Promise((resolve, reject) => {
-    server.listen(port, host, () => {
-      runtimeAuthService.saveRuntimeState(port);
-      console.log(`[Minfy Runtime] Server listening on http://${host}:${port}`);
-      resolve(server);
-    });
-    server.on('error', (err) => {
-      reject(err);
-    });
-  });
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      return await new Promise<http.Server>((resolve, reject) => {
+        const onError = (err: any) => {
+          server.removeListener('error', onError);
+          reject(err);
+        };
+        server.once('error', onError);
+        server.listen(port, host, () => {
+          server.removeListener('error', onError);
+          runtimeAuthService.saveRuntimeState(port);
+          console.log(`[Minfy Runtime] Server listening on http://${host}:${port}`);
+          resolve(server);
+        });
+      });
+    } catch (err: any) {
+      if (err.code === 'EADDRINUSE' && attempt < maxRetries - 1) {
+        attempt++;
+        await new Promise((r) => setTimeout(r, 400));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`Failed to bind to http://${host}:${port}`);
 }
 
 // Cleanup runtime state on process termination

@@ -5,7 +5,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { spawn, exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ApiResponse, RegisterWorkspaceResponse } from '@minfy/shared';
+import { ApiResponse, RegisterWorkspaceResponse, RuntimeStatusResponse } from '@minfy/shared';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,7 +22,14 @@ export interface ValidatedRuntimeState {
   port?: number;
   pid?: number;
   token?: string;
+  runtimeInstanceId?: string;
   startedAt?: string;
+}
+
+export interface AuthenticatedRuntimeIdentity {
+  authenticated: boolean;
+  pid?: number;
+  runtimeInstanceId?: string;
 }
 
 export type RuntimeRecoveryAction =
@@ -36,7 +43,7 @@ export interface RecoveryInputs {
   isHealthy: boolean;
   isPortBound?: boolean;
   state: ValidatedRuntimeState;
-  isTokenAuthed: boolean;
+  authenticatedIdentity?: AuthenticatedRuntimeIdentity;
   isRestartRequested?: boolean;
 }
 
@@ -48,10 +55,12 @@ export interface RecoveryDecision {
 
 /**
  * Pure decision function governing process termination and startup safety.
- * Principle: Minfy will NEVER terminate a process unless authenticated as a Minfy Runtime instance.
+ * Principle: Minfy will NEVER terminate a process unless authenticated as a Minfy Runtime instance
+ * AND its verified process PID and runtimeInstanceId match recorded state.
  */
 export function decideRuntimeRecovery(inputs: RecoveryInputs): RecoveryDecision {
-  const { isHealthy, isPortBound, state, isTokenAuthed, isRestartRequested } = inputs;
+  const { isHealthy, isPortBound, state, authenticatedIdentity, isRestartRequested } = inputs;
+  const isTokenAuthed = !!authenticatedIdentity?.authenticated;
 
   // Case 0: Port is occupied by an unverified non-Minfy service (port is bound, but health check failed)
   if (!isHealthy && isPortBound) {
@@ -79,33 +88,41 @@ export function decideRuntimeRecovery(inputs: RecoveryInputs): RecoveryDecision 
 
   // If a Minfy health response was received on port:
   if (isHealthy) {
+    const identityMatchesState =
+      state.valid &&
+      isTokenAuthed &&
+      typeof state.pid === 'number' &&
+      typeof state.runtimeInstanceId === 'string' &&
+      state.pid === authenticatedIdentity?.pid &&
+      state.runtimeInstanceId === authenticatedIdentity?.runtimeInstanceId;
+
     // Explicit restart request
     if (isRestartRequested) {
-      if (state.valid && isTokenAuthed && state.pid) {
+      if (identityMatchesState && state.pid) {
         return {
           action: 'safe_terminate_and_restart',
           pidToTerminate: state.pid,
-          reason: 'Verified Minfy Runtime instance confirmed by token authentication. Safe to restart.',
+          reason: 'Verified Minfy Runtime instance confirmed by token, PID, and runtimeInstanceId. Safe to restart.',
         };
       }
       return {
         action: 'port_occupied_unverified',
-        reason: 'Port is occupied by an unverified process. Minfy will not terminate it automatically.',
+        reason: 'Port is occupied by an unverified process or state identity mismatch. Minfy will not terminate it automatically.',
       };
     }
 
-    // Normal startup: token authenticates -> reuse
-    if (state.valid && isTokenAuthed && state.token) {
+    // Normal startup: token authenticates and identity matches -> reuse
+    if (identityMatchesState && state.token) {
       return {
         action: 'reuse_existing',
-        reason: 'Authenticated Minfy Runtime is running.',
+        reason: 'Authenticated Minfy Runtime is running with matching instance identity.',
       };
     }
 
-    // Port is occupied, but state is missing or token failed authentication -> DO NOT KILL
+    // Port is occupied, but identity mismatch, token invalid, or state missing -> DO NOT KILL
     return {
       action: 'port_occupied_unverified',
-      reason: 'A process is responding on runtime port, but valid Minfy authentication could not be established. Process will NOT be terminated.',
+      reason: 'A process is responding on runtime port, but valid Minfy authentication and instance identity could not be established. Process will NOT be terminated.',
     };
   }
 
@@ -170,8 +187,8 @@ export function checkHealth(): Promise<boolean> {
   });
 }
 
-// Verify token against privileged endpoint
-export function verifyAuthToken(token: string): Promise<boolean> {
+// Verify token against privileged endpoint and retrieve authenticated runtime identity
+export function verifyRuntimeIdentity(token: string): Promise<AuthenticatedRuntimeIdentity> {
   return new Promise((resolve) => {
     const req = http.get(
       `${BASE_URL}/api/status`,
@@ -180,13 +197,29 @@ export function verifyAuthToken(token: string): Promise<boolean> {
         timeout: 1000,
       },
       (res) => {
-        resolve(res.statusCode === 200);
+        let body = '';
+        res.on('data', (chunk) => (body += chunk));
+        res.on('end', () => {
+          try {
+            if (res.statusCode === 200) {
+              const json: ApiResponse<RuntimeStatusResponse> = JSON.parse(body);
+              if (json.success && json.data) {
+                return resolve({
+                  authenticated: true,
+                  pid: json.data.pid,
+                  runtimeInstanceId: json.data.runtimeInstanceId,
+                });
+              }
+            }
+          } catch {}
+          resolve({ authenticated: false });
+        });
       }
     );
-    req.on('error', () => resolve(false));
+    req.on('error', () => resolve({ authenticated: false }));
     req.on('timeout', () => {
       req.destroy();
-      resolve(false);
+      resolve({ authenticated: false });
     });
   });
 }
@@ -202,13 +235,16 @@ export function readRuntimeState(): ValidatedRuntimeState {
         typeof state.token === 'string' &&
         state.token.trim().length === 64 &&
         typeof state.pid === 'number' &&
-        typeof state.port === 'number'
+        typeof state.port === 'number' &&
+        typeof state.runtimeInstanceId === 'string' &&
+        state.runtimeInstanceId.trim().length > 0
       ) {
         return {
           valid: true,
           port: state.port,
           pid: state.pid,
           token: state.token.trim(),
+          runtimeInstanceId: state.runtimeInstanceId.trim(),
           startedAt: state.startedAt,
         };
       }
@@ -232,11 +268,14 @@ export function findPortPid(port: number): Promise<number | null> {
   return new Promise((resolve) => {
     const isWin = os.platform() === 'win32';
     if (isWin) {
-      exec(`netstat -ano -p tcp | findstr :${port}`, (err, stdout) => {
+      const netstatCmd = fs.existsSync('C:\\Windows\\System32\\netstat.exe')
+        ? 'C:\\Windows\\System32\\netstat.exe'
+        : 'netstat';
+      exec(`${netstatCmd} -ano -p tcp`, (err, stdout) => {
         if (err || !stdout) return resolve(null);
         const lines = stdout.trim().split('\n');
         for (const line of lines) {
-          if (line.includes('LISTENING')) {
+          if (line.includes(`:${port}`) && line.includes('LISTENING')) {
             const parts = line.trim().split(/\s+/);
             const pid = parseInt(parts[parts.length - 1], 10);
             if (!isNaN(pid) && pid > 0) return resolve(pid);
@@ -258,13 +297,20 @@ export function findPortPid(port: number): Promise<number | null> {
 // Terminate a verified Minfy PID safely
 export function terminatePid(pid: number): Promise<void> {
   return new Promise((resolve) => {
+    try {
+      process.kill(pid);
+    } catch {}
+
     if (os.platform() === 'win32') {
-      exec(`taskkill /PID ${pid} /F /T`, () => {
+      const taskkillCmd = fs.existsSync('C:\\Windows\\System32\\taskkill.exe')
+        ? 'C:\\Windows\\System32\\taskkill.exe'
+        : 'taskkill';
+      exec(`${taskkillCmd} /PID ${pid} /F /T`, () => {
         setTimeout(resolve, 600);
       });
     } else {
       try {
-        process.kill(pid, 'SIGTERM');
+        process.kill(pid, 'SIGKILL');
       } catch {}
       setTimeout(resolve, 600);
     }
@@ -276,28 +322,29 @@ export function spawnRuntimeProcess(): void {
   const runtimeDist = path.resolve(__dirname, '../../apps/runtime/dist/index.js');
   const runtimeSrc = path.resolve(__dirname, '../../apps/runtime/src/index.ts');
 
+  const minfyDir = path.join(os.homedir(), '.minfy');
+  if (!fs.existsSync(minfyDir)) {
+    fs.mkdirSync(minfyDir, { recursive: true });
+  }
+  const logPath = path.join(minfyDir, 'runtime.log');
+  const out = fs.openSync(logPath, 'a');
+  const err = fs.openSync(logPath, 'a');
+
   let proc;
   const isWindows = os.platform() === 'win32';
 
   if (fs.existsSync(runtimeDist)) {
-    if (isWindows) {
-      proc = spawn(process.execPath, [runtimeDist], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-    } else {
-      proc = spawn(process.execPath, [runtimeDist], {
-        detached: true,
-        stdio: 'ignore',
-      });
-    }
+    proc = spawn(process.execPath, [runtimeDist], {
+      detached: true,
+      stdio: ['ignore', out, err],
+      windowsHide: isWindows,
+    });
   } else if (fs.existsSync(runtimeSrc)) {
     proc = spawn('npx', ['tsx', runtimeSrc], {
       shell: true,
       detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
+      stdio: ['ignore', out, err],
+      windowsHide: isWindows,
     });
   } else {
     throw new Error('Could not locate Minfy runtime entrypoint. Please run npm run build first.');
@@ -313,23 +360,24 @@ export async function restartRuntimeDaemon(): Promise<string> {
   const isHealthy = await checkHealth();
   const portBound = await isPortBound(RUNTIME_PORT);
   const state = readRuntimeState();
-  let isTokenAuthed = false;
+  let authenticatedIdentity: AuthenticatedRuntimeIdentity | undefined;
+
   if (state.valid && state.token) {
-    isTokenAuthed = await verifyAuthToken(state.token);
+    authenticatedIdentity = await verifyRuntimeIdentity(state.token);
   }
 
   const decision = decideRuntimeRecovery({
     isHealthy,
     isPortBound: portBound,
     state,
-    isTokenAuthed,
+    authenticatedIdentity,
     isRestartRequested: true,
   });
 
   if (decision.action === 'port_occupied_unverified') {
     const occupiedPid = await findPortPid(RUNTIME_PORT);
     console.error(`
-\x1b[31m[Minfy Error]\x1b[0m Port ${RUNTIME_PORT} is in use by an unverified process${occupiedPid ? ` (PID: ${occupiedPid})` : ''}.
+\x1b[31m[Minfy Error]\x1b[0m Port ${RUNTIME_PORT} is in use by an unverified process or state identity mismatch${occupiedPid ? ` (PID: ${occupiedPid})` : ''}.
 Minfy will NOT terminate this process because its identity could not be verified.
 
 Please free port ${RUNTIME_PORT} or terminate the conflicting process manually.
@@ -343,11 +391,13 @@ Please free port ${RUNTIME_PORT} or terminate the conflicting process manually.
   }
 
   // Wait until port is completely released
-  for (let i = 0; i < 20; i++) {
-    const stillHealthy = await checkHealth();
-    if (!stillHealthy) break;
+  for (let i = 0; i < 30; i++) {
+    const bound = await isPortBound(RUNTIME_PORT);
+    if (!bound) break;
     await new Promise((r) => setTimeout(r, 200));
   }
+  // Grace period for OS socket TIME_WAIT release
+  await new Promise((r) => setTimeout(r, 500));
 
   try {
     if (fs.existsSync(STATE_FILE_PATH)) {
@@ -358,13 +408,13 @@ Please free port ${RUNTIME_PORT} or terminate the conflicting process manually.
   spawnRuntimeProcess();
 
   // Poll until healthy and new state written
-  for (let i = 0; i < 30; i++) {
-    await new Promise((r) => setTimeout(r, 200));
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 250));
     if (await checkHealth()) {
       const newState = readRuntimeState();
       if (newState.valid && newState.token) {
-        const isAuthed = await verifyAuthToken(newState.token);
-        if (isAuthed) {
+        const freshIdentity = await verifyRuntimeIdentity(newState.token);
+        if (freshIdentity.authenticated) {
           console.log('\x1b[32m[Minfy]\x1b[0m Runtime restarted and authenticated successfully.');
           return newState.token;
         }
@@ -380,16 +430,17 @@ export async function ensureRuntimeStarted(): Promise<string> {
   const isHealthy = await checkHealth();
   const portBound = await isPortBound(RUNTIME_PORT);
   const state = readRuntimeState();
-  let isTokenAuthed = false;
+  let authenticatedIdentity: AuthenticatedRuntimeIdentity | undefined;
+
   if (state.valid && state.token) {
-    isTokenAuthed = await verifyAuthToken(state.token);
+    authenticatedIdentity = await verifyRuntimeIdentity(state.token);
   }
 
   const decision = decideRuntimeRecovery({
     isHealthy,
     isPortBound: portBound,
     state,
-    isTokenAuthed,
+    authenticatedIdentity,
     isRestartRequested: false,
   });
 
@@ -431,8 +482,8 @@ If this was a previous Minfy instance that lost authentication state, run:
     if (await checkHealth()) {
       const freshState = readRuntimeState();
       if (freshState.valid && freshState.token) {
-        const isAuthed = await verifyAuthToken(freshState.token);
-        if (isAuthed) {
+        const freshIdentity = await verifyRuntimeIdentity(freshState.token);
+        if (freshIdentity.authenticated) {
           console.log('\x1b[32m[Minfy]\x1b[0m Runtime started successfully.');
           return freshState.token;
         }

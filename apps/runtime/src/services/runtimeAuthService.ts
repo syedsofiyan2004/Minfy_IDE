@@ -7,20 +7,27 @@ export interface RuntimeState {
   port: number;
   pid: number;
   token: string;
+  runtimeInstanceId: string;
   startedAt: string;
 }
 
 export class RuntimeAuthService {
   private token: string;
+  private runtimeInstanceId: string;
   private stateFilePath: string;
 
-  constructor(customToken?: string, statePath?: string) {
+  constructor(customToken?: string, statePath?: string, customInstanceId?: string) {
     this.token = customToken || crypto.randomBytes(32).toString('hex');
+    this.runtimeInstanceId = customInstanceId || crypto.randomUUID();
     this.stateFilePath = statePath || path.join(CONFIG.DATA_DIR, 'runtime-state.json');
   }
 
   public getToken(): string {
     return this.token;
+  }
+
+  public getRuntimeInstanceId(): string {
+    return this.runtimeInstanceId;
   }
 
   public verifyToken(candidate?: string): boolean {
@@ -47,6 +54,7 @@ export class RuntimeAuthService {
       port,
       pid: process.pid,
       token: this.token,
+      runtimeInstanceId: this.runtimeInstanceId,
       startedAt: new Date().toISOString(),
     };
 
@@ -66,7 +74,12 @@ export class RuntimeAuthService {
         const raw = fs.readFileSync(this.stateFilePath, 'utf-8');
         const existingState = JSON.parse(raw);
         // Only delete if the state file belongs to THIS specific runtime instance
-        if (existingState && existingState.pid === process.pid && existingState.token === this.token) {
+        if (
+          existingState &&
+          existingState.pid === process.pid &&
+          existingState.token === this.token &&
+          existingState.runtimeInstanceId === this.runtimeInstanceId
+        ) {
           fs.unlinkSync(this.stateFilePath);
         }
       }

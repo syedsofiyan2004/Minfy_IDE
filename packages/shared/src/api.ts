@@ -57,4 +57,6 @@ export interface RuntimeStatusResponse {
   version: string;
   platform: string;
   workspacesCount: number;
+  pid: number;
+  runtimeInstanceId: string;
 }

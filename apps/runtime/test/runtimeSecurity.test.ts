@@ -37,7 +37,17 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2.2)',
     app.use(runtimeAuthMiddleware);
 
     app.get('/api/status', (_req, res) => {
-      res.json({ success: true, data: { status: 'ok' } });
+      res.json({
+        success: true,
+        data: {
+          status: 'ok',
+          version: '0.1.0',
+          platform: process.platform,
+          workspacesCount: 0,
+          pid: process.pid,
+          runtimeInstanceId: runtimeAuthService.getRuntimeInstanceId(),
+        },
+      });
     });
 
     app.get('/api/workspaces', (_req, res) => {
@@ -137,11 +147,14 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2.2)',
     }
   });
 
-  test('GET /api/health succeeds without authentication', async () => {
+  test('GET /api/health succeeds without authentication and remains minimal without leaking instance details', async () => {
     const res = await fetch(`http://127.0.0.1:${testPort}/api/health`);
     assert.strictEqual(res.status, 200);
-    const json = await res.json();
+    const json: any = await res.json();
     assert.deepStrictEqual(json, { status: 'ok' });
+    assert.strictEqual(json.pid, undefined);
+    assert.strictEqual(json.runtimeInstanceId, undefined);
+    assert.strictEqual(json.token, undefined);
   });
 
   test('GET /api/status and /api/workspaces reject unauthenticated requests with HTTP 401', async () => {
@@ -159,13 +172,16 @@ describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2.2)',
     assert.strictEqual(res2.status, 401);
   });
 
-  test('Privileged endpoints accept requests with valid Authorization header', async () => {
+  test('Privileged endpoints accept requests with valid Authorization header and return non-secret instance identity', async () => {
     const res = await fetch(`http://127.0.0.1:${testPort}/api/status`, {
       headers: { Authorization: `Bearer ${validToken}` },
     });
     assert.strictEqual(res.status, 200);
     const json = await res.json();
     assert.strictEqual(json.success, true);
+    assert.strictEqual(json.data.pid, process.pid);
+    assert.strictEqual(typeof json.data.runtimeInstanceId, 'string');
+    assert.ok(json.data.runtimeInstanceId.length > 0);
   });
 
   test('Requests with foreign Origin (e.g. https://evil.example) are rejected with HTTP 403', async () => {
