@@ -16,6 +16,7 @@ import {
   Cpu,
   Zap,
   Terminal,
+  Cloud,
 } from 'lucide-react';
 
 interface Message {
@@ -39,6 +40,10 @@ export const AIPanel: React.FC = () => {
 
   const activeProvider = providers.find((p) => p.id === selectedProvider);
   const isAvailable = activeProvider?.status === 'available';
+
+  const currentModel = models.find((m) => m.id === selectedModel);
+  const isLocalExecution = currentModel ? currentModel.executionLocation === 'local' : true;
+  const isCloudExecution = currentModel?.executionLocation === 'cloud';
 
   // Load providers on mount
   const loadProviders = async () => {
@@ -248,7 +253,7 @@ export const AIPanel: React.FC = () => {
         </button>
       </div>
 
-      {/* Provider & Local Privacy Bar */}
+      {/* Provider & Execution Semantics Bar */}
       <div
         style={{
           padding: '8px 12px',
@@ -262,7 +267,11 @@ export const AIPanel: React.FC = () => {
         {/* Provider Status Row */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
-            <Cpu size={13} color="var(--minfy-blue-primary)" />
+            {isCloudExecution ? (
+              <Cloud size={13} color="var(--info)" />
+            ) : (
+              <Cpu size={13} color="var(--minfy-blue-primary)" />
+            )}
             <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
               {activeProvider?.name || 'Ollama'}
             </span>
@@ -287,18 +296,21 @@ export const AIPanel: React.FC = () => {
             </span>
           </div>
 
-          <span
-            style={{
-              fontSize: '10px',
-              padding: '1px 5px',
-              borderRadius: '8px',
-              backgroundColor: 'var(--surface-3)',
-              color: 'var(--minfy-yellow-accent)',
-              fontWeight: 600,
-            }}
-          >
-            Local • ₹0 Cost
-          </span>
+          {/* Accurate Execution & Billing Pill */}
+          {isAvailable && currentModel && (
+            <span
+              style={{
+                fontSize: '10px',
+                padding: '1px 6px',
+                borderRadius: '8px',
+                backgroundColor: isLocalExecution ? 'var(--surface-3)' : 'rgba(88, 166, 255, 0.15)',
+                color: isLocalExecution ? 'var(--minfy-yellow-accent)' : 'var(--info)',
+                fontWeight: 600,
+              }}
+            >
+              {isLocalExecution ? 'Local • ₹0 Cost' : 'Ollama Cloud'}
+            </span>
+          )}
         </div>
 
         {/* Model Selector Row */}
@@ -323,10 +335,34 @@ export const AIPanel: React.FC = () => {
             >
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.displayName}
+                  {m.displayName} {m.executionLocation === 'cloud' ? '☁ [Cloud]' : '💻 [Local]'}
                 </option>
               ))}
             </select>
+
+            {/* Subtitle describing inference location and billing semantics */}
+            <div
+              style={{
+                fontSize: '10px',
+                color: isCloudExecution ? 'var(--info)' : 'var(--text-muted)',
+                marginTop: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              {isCloudExecution ? (
+                <>
+                  <Cloud size={10} />
+                  <span>Remote inference via Ollama Cloud • Provider quota applies</span>
+                </>
+              ) : (
+                <>
+                  <Zap size={10} color="var(--minfy-yellow-accent)" />
+                  <span>Local AI • Runs on this machine • No metered API charge</span>
+                </>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -425,7 +461,11 @@ export const AIPanel: React.FC = () => {
             <div style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
               Ask Minfy
             </div>
-            <span>Your local AI provider is ready. Enter a question or task below.</span>
+            <span>
+              {isCloudExecution
+                ? 'Ollama Cloud provider ready for remote inference.'
+                : 'Your local AI provider is ready. Enter a question or task below.'}
+            </span>
           </div>
         ) : (
           messages.map((msg) => (
@@ -489,7 +529,7 @@ export const AIPanel: React.FC = () => {
                   {msg.usage.outputTokenCount !== undefined && (
                     <span>• {msg.usage.outputTokenCount} tokens</span>
                   )}
-                  <span>• {msg.usage.costDescription}</span>
+                  <span>• {msg.usage.costDescription || (msg.usage.executionLocation === 'local' ? 'Local • ₹0 API cost' : 'Remote inference')}</span>
                 </div>
               )}
             </div>

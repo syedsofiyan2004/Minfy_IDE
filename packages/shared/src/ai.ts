@@ -2,6 +2,10 @@ export type AIProviderType = 'local' | 'api' | 'subscription' | 'enterprise' | '
 
 export type AIProviderStatus = 'available' | 'unavailable' | 'degraded' | 'checking';
 
+export type AIExecutionLocation = 'local' | 'cloud' | 'hybrid' | 'unknown';
+
+export type AIBillingType = 'local' | 'free' | 'subscription' | 'metered' | 'unknown';
+
 export interface AIProvider {
   id: string;
   name: string;
@@ -16,6 +20,8 @@ export interface AIModel {
   id: string;
   providerId: string;
   displayName: string;
+  executionLocation: AIExecutionLocation;
+  billingType?: AIBillingType;
   sizeBytes?: number;
   contextWindow?: number;
   supportsStreaming?: boolean;
@@ -45,13 +51,15 @@ export interface AIStreamEvent {
 export interface AIUsage {
   providerId: string;
   modelId: string;
+  executionLocation: AIExecutionLocation;
+  billingType?: AIBillingType;
   startedAt: string;
   completedAt: string;
   durationMs: number;
   inputTokenCount?: number;
   outputTokenCount?: number;
   status: 'completed' | 'cancelled' | 'error';
-  costDescription: string;
+  costDescription?: string;
 }
 
 export interface AIProvidersResponse {

@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { AIProviderAdapter } from '../src/services/ai/types.js';
 import { AIProviderRegistry } from '../src/services/ai/aiRegistry.js';
-import { OllamaAdapter } from '../src/services/ai/adapters/ollamaAdapter.js';
+import { OllamaAdapter, classifyOllamaModel } from '../src/services/ai/adapters/ollamaAdapter.js';
 import { AIGenerateRequest, AIStreamEvent, AIUsage } from '@minfy/shared';
 
 class FakeAIAdapter implements AIProviderAdapter {
@@ -16,8 +16,22 @@ class FakeAIAdapter implements AIProviderAdapter {
 
   public async listModels() {
     return [
-      { id: 'fake-model-1', providerId: 'fake-provider', displayName: 'Fake Model 1', supportsStreaming: true },
-      { id: 'fake-model-2', providerId: 'fake-provider', displayName: 'Fake Model 2', supportsStreaming: true },
+      {
+        id: 'fake-model-1',
+        providerId: 'fake-provider',
+        displayName: 'Fake Model 1',
+        executionLocation: 'local' as const,
+        billingType: 'local' as const,
+        supportsStreaming: true,
+      },
+      {
+        id: 'fake-model-2',
+        providerId: 'fake-provider',
+        displayName: 'Fake Model 2',
+        executionLocation: 'cloud' as const,
+        billingType: 'unknown' as const,
+        supportsStreaming: true,
+      },
     ];
   }
 
@@ -36,6 +50,8 @@ class FakeAIAdapter implements AIProviderAdapter {
         const usage: AIUsage = {
           providerId: this.id,
           modelId: request.modelId,
+          executionLocation: 'local',
+          billingType: 'local',
           startedAt,
           completedAt: new Date().toISOString(),
           durationMs: Date.now() - startTime,
@@ -53,6 +69,8 @@ class FakeAIAdapter implements AIProviderAdapter {
     const usage: AIUsage = {
       providerId: this.id,
       modelId: request.modelId,
+      executionLocation: 'local',
+      billingType: 'local',
       startedAt,
       completedAt: new Date().toISOString(),
       durationMs: Date.now() - startTime,
@@ -83,13 +101,15 @@ describe('AI Provider Foundation & Registry', () => {
     assert.strictEqual(fakeProvider.modelsCount, 2);
   });
 
-  test('lists models for registered provider', async () => {
+  test('lists models for registered provider with execution location', async () => {
     const registry = new AIProviderRegistry();
     registry.registerAdapter(new FakeAIAdapter());
 
     const models = await registry.listModels('fake-provider');
     assert.strictEqual(models.length, 2);
     assert.strictEqual(models[0].id, 'fake-model-1');
+    assert.strictEqual(models[0].executionLocation, 'local');
+    assert.strictEqual(models[1].executionLocation, 'cloud');
   });
 
   test('handles unknown provider gracefully when listing models', async () => {
@@ -117,6 +137,7 @@ describe('AI Provider Foundation & Registry', () => {
     );
 
     assert.strictEqual(usage.status, 'completed');
+    assert.strictEqual(usage.executionLocation, 'local');
     assert.strictEqual(usage.inputTokenCount, 10);
     assert.strictEqual(usage.outputTokenCount, 5);
 
@@ -159,6 +180,44 @@ describe('AI Provider Foundation & Registry', () => {
     const errEvent = events.find((e) => e.type === 'error');
     assert.ok(errEvent);
     assert.ok(errEvent.error?.includes('stopped by user'));
+  });
+});
+
+describe('Ollama Model Execution Location & Cost Semantics (Milestone 3.1)', () => {
+  test('classifies standard local model as local execution and local billing', () => {
+    const local1 = classifyOllamaModel('llama3:8b');
+    assert.strictEqual(local1.executionLocation, 'local');
+    assert.strictEqual(local1.billingType, 'local');
+    assert.ok(local1.costDescription.includes('Local inference'));
+    assert.ok(local1.costDescription.includes('No API charge'));
+
+    const local2 = classifyOllamaModel('qwen2.5-coder:7b');
+    assert.strictEqual(local2.executionLocation, 'local');
+    assert.strictEqual(local2.billingType, 'local');
+
+    const local3 = classifyOllamaModel('codellama:13b');
+    assert.strictEqual(local3.executionLocation, 'local');
+  });
+
+  test('classifies documented :cloud model as cloud execution and unknown billing', () => {
+    const cloud1 = classifyOllamaModel('kimi-k2.6:cloud');
+    assert.strictEqual(cloud1.executionLocation, 'cloud');
+    assert.strictEqual(cloud1.billingType, 'unknown');
+    assert.ok(cloud1.costDescription.includes('Remote inference via Ollama Cloud'));
+    assert.ok(cloud1.costDescription.includes('Provider quota applies'));
+    // Must NOT claim zero cost or local execution
+    assert.strictEqual(cloud1.costDescription.includes('No API charge'), false);
+
+    const cloud2 = classifyOllamaModel('deepseek-r1:cloud');
+    assert.strictEqual(cloud2.executionLocation, 'cloud');
+    assert.strictEqual(cloud2.billingType, 'unknown');
+  });
+
+  test('preserves unknown billing information without fabricating zero cost', () => {
+    const cloud = classifyOllamaModel('custom-model:cloud');
+    assert.strictEqual(cloud.billingType, 'unknown');
+    assert.notStrictEqual(cloud.billingType, 'free');
+    assert.notStrictEqual(cloud.billingType, 'local');
   });
 });
 

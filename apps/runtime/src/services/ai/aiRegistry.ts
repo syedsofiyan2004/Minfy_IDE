@@ -74,6 +74,8 @@ export class AIProviderRegistry {
       const failedUsage: AIUsage = {
         providerId: request.providerId,
         modelId: request.modelId,
+        executionLocation: 'unknown',
+        billingType: 'unknown',
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: 0,

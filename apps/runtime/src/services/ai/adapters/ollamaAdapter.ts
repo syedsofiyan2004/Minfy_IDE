@@ -4,8 +4,31 @@ import {
   AIGenerateRequest,
   AIStreamEvent,
   AIUsage,
+  AIExecutionLocation,
+  AIBillingType,
 } from '@minfy/shared';
 import { AIProviderAdapter } from '../types.js';
+
+export function classifyOllamaModel(name: string): {
+  executionLocation: AIExecutionLocation;
+  billingType?: AIBillingType;
+  costDescription: string;
+} {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(':cloud') || lower.includes(':cloud')) {
+    return {
+      executionLocation: 'cloud',
+      billingType: 'unknown',
+      costDescription: 'Remote inference via Ollama Cloud • Provider quota applies',
+    };
+  }
+
+  return {
+    executionLocation: 'local',
+    billingType: 'local',
+    costDescription: 'Local inference • No API charge',
+  };
+}
 
 export class OllamaAdapter implements AIProviderAdapter {
   public readonly id = 'ollama';
@@ -82,15 +105,20 @@ export class OllamaAdapter implements AIProviderAdapter {
         return [];
       }
 
-      return data.models.map((m: any) => ({
-        id: m.name,
-        providerId: this.id,
-        displayName: m.name,
-        sizeBytes: m.size,
-        family: m.details?.family,
-        parameterSize: m.details?.parameter_size,
-        supportsStreaming: true,
-      }));
+      return data.models.map((m: any) => {
+        const classification = classifyOllamaModel(m.name || '');
+        return {
+          id: m.name,
+          providerId: this.id,
+          displayName: m.name,
+          executionLocation: classification.executionLocation,
+          billingType: classification.billingType,
+          sizeBytes: m.size,
+          family: m.details?.family,
+          parameterSize: m.details?.parameter_size,
+          supportsStreaming: true,
+        };
+      });
     } catch {
       return [];
     }
@@ -103,6 +131,7 @@ export class OllamaAdapter implements AIProviderAdapter {
   ): Promise<AIUsage> {
     const startedAt = new Date().toISOString();
     const startTime = Date.now();
+    const classification = classifyOllamaModel(request.modelId);
 
     onStream({ type: 'started' });
 
@@ -185,13 +214,15 @@ export class OllamaAdapter implements AIProviderAdapter {
         const usage: AIUsage = {
           providerId: this.id,
           modelId: request.modelId,
+          executionLocation: classification.executionLocation,
+          billingType: classification.billingType,
           startedAt,
           completedAt,
           durationMs,
           inputTokenCount: inputTokens,
           outputTokenCount: outputTokens,
           status: 'cancelled',
-          costDescription: 'Local provider • No API charge',
+          costDescription: classification.costDescription,
         };
         onStream({ type: 'error', error: 'Generation stopped by user', usage });
         return usage;
@@ -200,13 +231,15 @@ export class OllamaAdapter implements AIProviderAdapter {
       const usage: AIUsage = {
         providerId: this.id,
         modelId: request.modelId,
+        executionLocation: classification.executionLocation,
+        billingType: classification.billingType,
         startedAt,
         completedAt,
         durationMs,
         inputTokenCount: inputTokens,
         outputTokenCount: outputTokens,
         status: 'completed',
-        costDescription: 'Local provider • No API charge',
+        costDescription: classification.costDescription,
       };
 
       onStream({ type: 'usage', usage });
@@ -220,11 +253,13 @@ export class OllamaAdapter implements AIProviderAdapter {
       const usage: AIUsage = {
         providerId: this.id,
         modelId: request.modelId,
+        executionLocation: classification.executionLocation,
+        billingType: classification.billingType,
         startedAt,
         completedAt,
         durationMs,
         status: isAbort ? 'cancelled' : 'error',
-        costDescription: 'Local provider • No API charge',
+        costDescription: classification.costDescription,
       };
 
       if (isAbort) {
