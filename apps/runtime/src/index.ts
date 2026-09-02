@@ -80,8 +80,12 @@ server.on('upgrade', (request, socket, head) => {
   }
 });
 
+import { credentialStore } from './services/credentialStore.js';
+
 // Start Server strictly bound to loopback
-export function startServer(port: number = CONFIG.PORT, host: string = CONFIG.HOST): Promise<http.Server> {
+export async function startServer(port: number = CONFIG.PORT, host: string = CONFIG.HOST): Promise<http.Server> {
+  await credentialStore.loadInitialCredentials(['openrouter']).catch(() => {});
+
   return new Promise((resolve, reject) => {
     server.listen(port, host, () => {
       console.log(`[Minfy Runtime] Server listening on http://${host}:${port}`);

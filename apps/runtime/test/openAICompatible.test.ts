@@ -2,7 +2,11 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert';
 import http from 'node:http';
 import { OpenAICompatibleAdapter } from '../src/services/ai/adapters/openAICompatibleAdapter.js';
-import { OpenRouterAdapter, classifyOpenRouterModel } from '../src/services/ai/adapters/openRouterAdapter.js';
+import {
+  OpenRouterAdapter,
+  classifyOpenRouterModel,
+  getOpenRouterHeaders,
+} from '../src/services/ai/adapters/openRouterAdapter.js';
 import { AIProviderRegistry } from '../src/services/ai/aiRegistry.js';
 import { AIStreamEvent } from '@minfy/shared';
 
@@ -49,11 +53,11 @@ describe('OpenAI-Compatible Generic Provider Adapter', () => {
           Connection: 'keep-alive',
         });
 
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Hello' } }] })}\n\n`);
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: ' from' } }] })}\n\n`);
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: ' OpenAI-compatible' } }] })}\n\n`);
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: ' provider!' } }] })}\n\n`);
-        res.write(`data: ${JSON.stringify({ usage: { prompt_tokens: 12, completion_tokens: 6 } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct:free', choices: [{ delta: { content: 'Hello' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct:free', choices: [{ delta: { content: ' from' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct:free', choices: [{ delta: { content: ' OpenAI-compatible' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct:free', choices: [{ delta: { content: ' provider!' } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct:free', usage: { prompt_tokens: 12, completion_tokens: 6 } })}\n\n`);
         res.write('data: [DONE]\n\n');
         res.end();
         return;
@@ -112,7 +116,7 @@ describe('OpenAI-Compatible Generic Provider Adapter', () => {
     assert.ok(status.reason?.includes('Authentication failed'));
   });
 
-  test('normalizes streamed SSE chunks and handles [DONE] termination', async () => {
+  test('normalizes streamed SSE chunks, captures resolvedModelId, and handles [DONE] termination', async () => {
     const adapter = new OpenAICompatibleAdapter({
       id: 'mock-compat-stream',
       name: 'Mock Stream Provider',
@@ -128,7 +132,7 @@ describe('OpenAI-Compatible Generic Provider Adapter', () => {
     const usage = await adapter.generate(
       {
         providerId: 'mock-compat-stream',
-        modelId: 'openai/gpt-4o',
+        modelId: 'openrouter/free',
         prompt: 'Say hello',
       },
       (event) => {
@@ -138,6 +142,8 @@ describe('OpenAI-Compatible Generic Provider Adapter', () => {
 
     assert.strictEqual(usage.status, 'completed');
     assert.strictEqual(usage.executionLocation, 'cloud');
+    assert.strictEqual(usage.modelId, 'openrouter/free');
+    assert.strictEqual(usage.resolvedModelId, 'meta-llama/llama-3.3-70b-instruct:free');
     assert.strictEqual(usage.inputTokenCount, 12);
     assert.strictEqual(usage.outputTokenCount, 6);
 
@@ -146,7 +152,29 @@ describe('OpenAI-Compatible Generic Provider Adapter', () => {
   });
 });
 
-describe('OpenRouter & OpenRouter Free Semantics (Milestone 4)', () => {
+describe('OpenRouter Header Attribution & Model Semantics (Milestone 4.1)', () => {
+  test('omits HTTP-Referer when MINFY_APP_URL is not configured', () => {
+    const origUrl = process.env.MINFY_APP_URL;
+    delete process.env.MINFY_APP_URL;
+
+    const headers = getOpenRouterHeaders();
+    assert.strictEqual(headers['X-Title'], 'Minfy IDE');
+    assert.strictEqual(headers['HTTP-Referer'], undefined);
+
+    process.env.MINFY_APP_URL = origUrl;
+  });
+
+  test('includes HTTP-Referer when MINFY_APP_URL is explicitly configured', () => {
+    const origUrl = process.env.MINFY_APP_URL;
+    process.env.MINFY_APP_URL = 'https://my-ide.internal';
+
+    const headers = getOpenRouterHeaders();
+    assert.strictEqual(headers['X-Title'], 'Minfy IDE');
+    assert.strictEqual(headers['HTTP-Referer'], 'https://my-ide.internal');
+
+    process.env.MINFY_APP_URL = origUrl;
+  });
+
   test('classifies openrouter/free and :free models as cloud execution with free billing', () => {
     const free1 = classifyOpenRouterModel('openrouter/free');
     assert.strictEqual(free1.executionLocation, 'cloud');
@@ -159,8 +187,18 @@ describe('OpenRouter & OpenRouter Free Semantics (Milestone 4)', () => {
     assert.strictEqual(free2.billingType, 'free');
   });
 
+  test('identifies free models using zero-token pricing metadata', () => {
+    const zeroPriced = classifyOpenRouterModel('custom-free-model', {
+      pricing: { prompt: '0', completion: '0' },
+    });
+    assert.strictEqual(zeroPriced.executionLocation, 'cloud');
+    assert.strictEqual(zeroPriced.billingType, 'free');
+  });
+
   test('classifies paid/standard OpenRouter models as cloud execution with unknown billing', () => {
-    const paid1 = classifyOpenRouterModel('anthropic/claude-3.5-sonnet');
+    const paid1 = classifyOpenRouterModel('anthropic/claude-3.5-sonnet', {
+      pricing: { prompt: '0.000003', completion: '0.000015' },
+    });
     assert.strictEqual(paid1.executionLocation, 'cloud');
     assert.strictEqual(paid1.billingType, 'unknown');
     assert.ok(paid1.costDescription.includes('Provider quota applies'));

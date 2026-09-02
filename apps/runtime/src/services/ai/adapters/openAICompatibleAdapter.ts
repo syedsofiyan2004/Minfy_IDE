@@ -262,6 +262,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       let buffer = '';
       let inputTokens: number | undefined;
       let outputTokens: number | undefined;
+      let resolvedModelId: string | undefined;
 
       while (true) {
         if (abortSignal?.aborted) {
@@ -288,6 +289,10 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
 
           try {
             const chunk = JSON.parse(dataStr);
+            if (chunk?.model && chunk.model !== request.modelId) {
+              resolvedModelId = chunk.model;
+            }
+
             const delta = chunk?.choices?.[0]?.delta?.content;
             if (delta) {
               onStream({
@@ -313,6 +318,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
         const usage: AIUsage = {
           providerId: this.id,
           modelId: request.modelId,
+          resolvedModelId,
           executionLocation: location,
           billingType: billing,
           startedAt,
@@ -330,6 +336,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       const usage: AIUsage = {
         providerId: this.id,
         modelId: request.modelId,
+        resolvedModelId,
         executionLocation: location,
         billingType: billing,
         startedAt,

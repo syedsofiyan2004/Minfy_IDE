@@ -8,9 +8,12 @@ export function classifyOpenRouterModel(modelId: string, rawModel?: any): {
   costDescription: string;
 } {
   const lower = modelId.toLowerCase();
-  const isFreePricing = rawModel?.pricing?.prompt === '0' && rawModel?.pricing?.completion === '0';
+  const isFreePricing =
+    rawModel?.pricing &&
+    rawModel.pricing.prompt === '0' &&
+    rawModel.pricing.completion === '0';
 
-  if (lower === 'openrouter/free' || lower.includes(':free') || isFreePricing) {
+  if (lower === 'openrouter/free' || isFreePricing || lower.includes(':free')) {
     return {
       executionLocation: 'cloud',
       billingType: 'free',
@@ -25,6 +28,18 @@ export function classifyOpenRouterModel(modelId: string, rawModel?: any): {
   };
 }
 
+export function getOpenRouterHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'X-Title': 'Minfy IDE',
+  };
+
+  if (process.env.MINFY_APP_URL && process.env.MINFY_APP_URL.trim()) {
+    headers['HTTP-Referer'] = process.env.MINFY_APP_URL.trim();
+  }
+
+  return headers;
+}
+
 export class OpenRouterAdapter extends OpenAICompatibleAdapter {
   constructor() {
     super({
@@ -36,10 +51,7 @@ export class OpenRouterAdapter extends OpenAICompatibleAdapter {
       getApiKey: () => credentialStore.getCredential('openrouter'),
       defaultExecutionLocation: 'cloud',
       defaultBillingType: 'unknown',
-      customHeaders: {
-        'HTTP-Referer': 'https://minfy.tech',
-        'X-Title': 'Minfy IDE',
-      },
+      customHeaders: getOpenRouterHeaders(),
       extraModels: [
         {
           id: 'openrouter/free',

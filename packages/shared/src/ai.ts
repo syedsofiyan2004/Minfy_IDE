@@ -16,6 +16,7 @@ export interface AIProvider {
   modelsCount?: number;
   requiresAuth?: boolean;
   connected?: boolean;
+  credentialBackend?: string;
 }
 
 export interface AIModel {
@@ -53,6 +54,7 @@ export interface AIStreamEvent {
 export interface AIUsage {
   providerId: string;
   modelId: string;
+  resolvedModelId?: string;
   executionLocation: AIExecutionLocation;
   billingType?: AIBillingType;
   startedAt: string;
@@ -66,6 +68,8 @@ export interface AIUsage {
 
 export interface AIProvidersResponse {
   providers: AIProvider[];
+  credentialBackend?: string;
+  credentialBackendName?: string;
 }
 
 export interface AIModelsResponse {
@@ -80,4 +84,5 @@ export interface ConnectProviderRequest {
 export interface ConnectProviderResponse {
   connected: boolean;
   modelsCount?: number;
+  credentialBackend?: string;
 }

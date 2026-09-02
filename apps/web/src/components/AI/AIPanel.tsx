@@ -19,6 +19,7 @@ import {
   Cloud,
   Key,
   LogOut,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface Message {
@@ -31,6 +32,7 @@ interface Message {
 
 export const AIPanel: React.FC = () => {
   const [providers, setProviders] = useState<AIProvider[]>([]);
+  const [credentialBackendName, setCredentialBackendName] = useState<string>('Windows Credential Manager');
   const [selectedProvider, setSelectedProvider] = useState<string>(() => {
     return localStorage.getItem('minfy_ai_provider') || 'ollama';
   });
@@ -62,6 +64,9 @@ export const AIPanel: React.FC = () => {
       setLoadingProviders(true);
       const res = await api.listAIProviders();
       setProviders(res.providers);
+      if (res.credentialBackendName) {
+        setCredentialBackendName(res.credentialBackendName);
+      }
 
       const targetId = targetProviderId || selectedProvider;
       const validProv = res.providers.some((p) => p.id === targetId)
@@ -576,9 +581,10 @@ export const AIPanel: React.FC = () => {
               </button>
             </form>
 
-            <span style={{ fontSize: '10px', color: 'var(--text-disabled)', lineHeight: '1.3' }}>
-              🔒 Credentials are saved securely by the local Minfy runtime in ~/.minfy, not in browser storage.
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px', color: 'var(--text-disabled)' }}>
+              <ShieldCheck size={12} color="var(--success)" />
+              <span>Credentials secured by {credentialBackendName || 'OS Keyring'}</span>
+            </div>
           </div>
         ) : !isAvailable && selectedProvider === 'ollama' ? (
           <div
@@ -716,6 +722,7 @@ export const AIPanel: React.FC = () => {
                     alignItems: 'center',
                     gap: '6px',
                     marginTop: '2px',
+                    flexWrap: 'wrap',
                   }}
                 >
                   <CheckCircle2 size={10} color="var(--success)" />
@@ -724,6 +731,11 @@ export const AIPanel: React.FC = () => {
                     <span>• {msg.usage.outputTokenCount} tokens</span>
                   )}
                   <span>• {msg.usage.costDescription || (msg.usage.billingType === 'free' ? 'Free token pricing' : msg.usage.executionLocation === 'local' ? 'Local • ₹0 API cost' : 'Remote inference')}</span>
+                  {msg.usage.resolvedModelId && (
+                    <span style={{ color: 'var(--text-muted)' }}>
+                      (routed to {msg.usage.resolvedModelId})
+                    </span>
+                  )}
                 </div>
               )}
             </div>

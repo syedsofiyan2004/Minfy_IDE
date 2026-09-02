@@ -12,6 +12,7 @@ import {
 } from '@minfy/shared';
 import { aiProviderRegistry } from '../services/ai/aiRegistry.js';
 import { credentialStore } from '../services/credentialStore.js';
+import { getOpenRouterHeaders } from '../services/ai/adapters/openRouterAdapter.js';
 
 export const aiRouter = Router();
 
@@ -19,9 +20,15 @@ export const aiRouter = Router();
 aiRouter.get('/providers', async (_req: Request, res: Response<ApiResponse<AIProvidersResponse>>) => {
   try {
     const providers = await aiProviderRegistry.listProviders();
+    const backendInfo = credentialStore.backendInfo();
+
     return res.json({
       success: true,
-      data: { providers },
+      data: {
+        providers,
+        credentialBackend: backendInfo.type,
+        credentialBackendName: backendInfo.name,
+      },
     });
   } catch (err: any) {
     return res.status(500).json({
@@ -78,12 +85,13 @@ aiRouter.post('/providers/:id/connect', async (req: Request<{ id: string }, {}, 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
 
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${cleanKey}`,
+        ...getOpenRouterHeaders(),
+      };
+
       const testRes = await fetch('https://openrouter.ai/api/v1/models', {
-        headers: {
-          Authorization: `Bearer ${cleanKey}`,
-          'HTTP-Referer': 'https://minfy.tech',
-          'X-Title': 'Minfy IDE',
-        },
+        headers,
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -100,24 +108,27 @@ aiRouter.post('/providers/:id/connect', async (req: Request<{ id: string }, {}, 
     }
   }
 
-  // Persist only after validation
-  credentialStore.setCredential(providerId, cleanKey);
+  // Persist asynchronously to backend & synchronous hot cache
+  await credentialStore.set(providerId, cleanKey);
 
   const status = await adapter.getStatus();
+  const backendInfo = credentialStore.backendInfo();
+
   return res.json({
     success: true,
     data: {
       connected: true,
       modelsCount: status.modelsCount,
+      credentialBackend: backendInfo.type,
     },
     message: `Connected ${adapter.name} successfully`,
   });
 });
 
 // DELETE /api/ai/providers/:id/connection
-aiRouter.delete('/providers/:id/connection', (req: Request<{ id: string }>, res: Response<ApiResponse<{ connected: boolean }>>) => {
+aiRouter.delete('/providers/:id/connection', async (req: Request<{ id: string }>, res: Response<ApiResponse<{ connected: boolean }>>) => {
   const providerId = req.params.id;
-  credentialStore.deleteCredential(providerId);
+  await credentialStore.delete(providerId);
 
   return res.json({
     success: true,
