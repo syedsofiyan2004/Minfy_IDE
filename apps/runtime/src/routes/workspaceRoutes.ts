@@ -1,6 +1,13 @@
 import { Router, Request, Response } from 'express';
-import { RegisterWorkspaceRequest, RegisterWorkspaceResponse, ApiResponse, Workspace } from '@minfy/shared';
+import {
+  RegisterWorkspaceRequest,
+  RegisterWorkspaceResponse,
+  ApiResponse,
+  Workspace,
+  TerminalTicketResponse,
+} from '@minfy/shared';
 import { workspaceService } from '../services/workspaceService.js';
+import { terminalTicketService } from '../services/terminalTicketService.js';
 
 export const workspaceRouter = Router();
 
@@ -43,5 +50,23 @@ workspaceRouter.get('/:id', (req: Request<{ id: string }>, res: Response<ApiResp
   return res.json({
     success: true,
     data: workspace,
+  });
+});
+
+// POST /api/workspaces/:id/terminal-ticket
+workspaceRouter.post('/:id/terminal-ticket', (req: Request<{ id: string }>, res: Response<ApiResponse<TerminalTicketResponse>>) => {
+  const workspace = workspaceService.getWorkspace(req.params.id);
+  if (!workspace) {
+    return res.status(404).json({
+      success: false,
+      error: `Workspace ${req.params.id} not found`,
+    });
+  }
+
+  const { ticket, expiresAt } = terminalTicketService.createTicket(req.params.id);
+
+  return res.json({
+    success: true,
+    data: { ticket, expiresAt },
   });
 });

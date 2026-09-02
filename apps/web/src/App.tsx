@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Workspace, FileNode, FileContentResult, ProjectIntelligence } from '@minfy/shared';
-import { api } from './api/client.js';
+import { api, getRuntimeToken } from './api/client.js';
 import { Header } from './components/Header.js';
 import { ActivityBar, ActivityView } from './components/ActivityBar/ActivityBar.js';
 import { FileTree } from './components/Explorer/FileTree.js';
@@ -12,6 +12,7 @@ import { UnsavedChangesModal } from './components/Editor/UnsavedChangesModal.js'
 import { TerminalPanel } from './components/Terminal/TerminalPanel.js';
 import { WorkspaceSelector } from './components/WorkspaceSelector.js';
 import { ToastContainer, ToastMessage } from './components/Toast.js';
+import { ShieldAlert, Terminal } from 'lucide-react';
 
 type PendingNavigation =
   | { type: 'file'; node: FileNode }
@@ -22,6 +23,7 @@ export function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState<Workspace[]>([]);
   const [runtimeConnected, setRuntimeConnected] = useState<boolean>(true);
+  const [authRequired, setAuthRequired] = useState<boolean>(false);
 
   // Active Sidebar View (Milestone 2 & 3 Activity Bar)
   const [activeView, setActiveView] = useState<ActivityView>('explorer');
@@ -79,8 +81,13 @@ export function App() {
       try {
         await api.checkStatus();
         setRuntimeConnected(true);
-      } catch {
-        setRuntimeConnected(false);
+        setAuthRequired(false);
+      } catch (err: any) {
+        if (err.message?.includes('401') || err.message?.includes('authentication required')) {
+          setAuthRequired(true);
+        } else {
+          setRuntimeConnected(false);
+        }
       }
     };
 
@@ -177,17 +184,22 @@ export function App() {
     if (initialLoadedRef.current) return;
     initialLoadedRef.current = true;
 
-    const init = async () => {
-      await fetchRecentWorkspaces();
-      const params = new URLSearchParams(window.location.search);
-      const wsId = params.get('workspaceId');
+    // Trigger token extraction from URL fragment
+    getRuntimeToken();
 
-      if (wsId) {
-        try {
+    const init = async () => {
+      try {
+        await fetchRecentWorkspaces();
+        const params = new URLSearchParams(window.location.search);
+        const wsId = params.get('workspaceId');
+
+        if (wsId) {
           const ws = await api.getWorkspace(wsId);
           await performSelectWorkspace(ws);
-        } catch {
-          addToast('error', `Workspace ${wsId} not found`);
+        }
+      } catch (err: any) {
+        if (err.message?.includes('401') || err.message?.includes('authentication required')) {
+          setAuthRequired(true);
         }
       }
     };
@@ -383,6 +395,55 @@ export function App() {
     ]);
     addToast('info', 'Refreshed workspace and intelligence');
   };
+
+  // Render Restrained Unauthenticated Screen for direct browser opens
+  if (authRequired) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100vh',
+          backgroundColor: 'var(--surface-0)',
+          color: 'var(--text-primary)',
+          gap: '16px',
+          padding: '24px',
+          textAlign: 'center',
+          userSelect: 'none',
+        }}
+      >
+        <ShieldAlert size={48} color="var(--minfy-blue-primary)" />
+        <div style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
+          Minfy Runtime Authentication Required
+        </div>
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', maxWidth: '400px', lineHeight: '1.5' }}>
+          Direct browser access without runtime credentials is not permitted to protect your local files and shell.
+        </div>
+        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
+          Open your project using the Minfy CLI:
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            backgroundColor: 'var(--surface-2)',
+            border: '1px solid var(--border-default)',
+            padding: '8px 16px',
+            borderRadius: '6px',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '13px',
+            color: 'var(--minfy-yellow-accent)',
+          }}
+        >
+          <Terminal size={14} />
+          <span>minfy .</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">

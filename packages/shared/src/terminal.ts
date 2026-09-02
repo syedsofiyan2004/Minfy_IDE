@@ -14,3 +14,8 @@ export interface TerminalServerMessage {
   exitCode?: number;
   error?: string;
 }
+
+export interface TerminalTicketResponse {
+  ticket: string;
+  expiresAt: number;
+}

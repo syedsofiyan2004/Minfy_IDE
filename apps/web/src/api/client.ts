@@ -13,20 +13,50 @@ import {
   AIStreamEvent,
   AIUsage,
   ConnectProviderResponse,
+  TerminalTicketResponse,
 } from '@minfy/shared';
 
 const API_BASE = '/api';
 
+export function getRuntimeToken(): string | null {
+  if (typeof window !== 'undefined') {
+    // 1. Inspect URL fragment on initial load (#runtimeToken=...)
+    if (window.location.hash) {
+      const hash = window.location.hash.substring(1);
+      const params = new URLSearchParams(hash);
+      const token = params.get('runtimeToken');
+      if (token) {
+        sessionStorage.setItem('minfy_runtime_token', token);
+        // Immediately scrub the secret token from browser history & URL bar
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        return token;
+      }
+    }
+
+    // 2. Read from session storage
+    return sessionStorage.getItem('minfy_runtime_token');
+  }
+  return null;
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const token = getRuntimeToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(options?.headers as Record<string, string>),
+  };
+
   const res = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
     ...options,
+    headers,
   });
 
-  const json: ApiResponse<T> = await res.json();
+  const json: ApiResponse<T> = await res.json().catch(() => ({
+    success: false,
+    error: `HTTP error ${res.status}`,
+  }));
+
   if (!json.success && !res.ok) {
     throw new Error(json.error || `HTTP error ${res.status}`);
   }
@@ -37,6 +67,13 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getRuntimeToken,
+
+  checkHealth: async (): Promise<{ status: string }> => {
+    const res = await fetch(`${API_BASE}/health`);
+    return res.json();
+  },
+
   checkStatus: async (): Promise<RuntimeStatusResponse> => {
     return fetchJson<RuntimeStatusResponse>(`${API_BASE}/status`);
   },
@@ -103,7 +140,13 @@ export const api = {
     });
   },
 
-  // AI Provider Foundation (Milestones 3, 3.1 & 4)
+  createTerminalTicket: async (workspaceId: string): Promise<TerminalTicketResponse> => {
+    return fetchJson<TerminalTicketResponse>(`${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/terminal-ticket`, {
+      method: 'POST',
+    });
+  },
+
+  // AI Provider Foundation
   listAIProviders: async (): Promise<AIProvidersResponse> => {
     return fetchJson<AIProvidersResponse>(`${API_BASE}/ai/providers`);
   },
@@ -130,9 +173,15 @@ export const api = {
     onEvent: (event: AIStreamEvent) => void,
     abortSignal?: AbortSignal
   ): Promise<void> => {
+    const token = getRuntimeToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+
     const res = await fetch(`${API_BASE}/ai/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(request),
       signal: abortSignal,
     });

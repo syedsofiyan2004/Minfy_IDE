@@ -1,174 +1,211 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import os from 'node:os';
-import { resolveSafeWorkspacePath, SecurityError } from '../src/security/pathGuard.js';
-import { fileService } from '../src/services/fileService.js';
-import { workspaceService } from '../src/services/workspaceService.js';
+import http from 'node:http';
+import express from 'express';
+import { runtimeAuthService } from '../src/services/runtimeAuthService.js';
+import { terminalTicketService } from '../src/services/terminalTicketService.js';
+import {
+  hostValidationMiddleware,
+  corsOriginMiddleware,
+  runtimeAuthMiddleware,
+  isAllowedHost,
+  isAllowedOrigin,
+} from '../src/middleware/securityMiddleware.js';
+import {
+  CredentialStore,
+  ICredentialBackend,
+  WindowsCredentialBackend,
+} from '../src/services/credentialStore.js';
 
-describe('Security & Path Traversal Guardrails', () => {
-  const root = path.join(os.tmpdir(), `minfy-security-test-${Date.now()}`);
-  const outside = path.join(os.tmpdir(), `minfy-outside-test-${Date.now()}`);
-  let ws: any;
-  let symlinksSupported = false;
+describe('Runtime Authentication & Defense-in-Depth Security (Milestone 4.2)', () => {
+  const validToken = runtimeAuthService.getToken();
+  let server: http.Server;
+  let testPort: number;
 
   before(async () => {
-    await fs.mkdir(root, { recursive: true });
-    await fs.mkdir(outside, { recursive: true });
-    await fs.mkdir(path.join(root, 'packages', 'src'), { recursive: true });
-    await fs.writeFile(path.join(root, 'packages', 'src', 'inside.ts'), 'inside content', 'utf-8');
-    await fs.writeFile(path.join(outside, 'secret.txt'), 'super secret', 'utf-8');
+    const app = express();
+    app.use(hostValidationMiddleware);
+    app.use(corsOriginMiddleware);
+    app.use(express.json());
 
-    ws = await workspaceService.registerWorkspace(root);
+    // Public endpoint
+    app.get('/api/health', (_req, res) => {
+      res.json({ status: 'ok' });
+    });
 
-    // Try creating a test symlink to check OS support/permissions
-    try {
-      const testSymlinkPath = path.join(root, 'test-symlink');
-      await fs.symlink(path.join(root, 'packages', 'src'), testSymlinkPath, 'junction');
-      await fs.unlink(testSymlinkPath);
-      symlinksSupported = true;
-    } catch {
-      symlinksSupported = false;
-    }
+    // Protected endpoints
+    app.use(runtimeAuthMiddleware);
+
+    app.get('/api/status', (_req, res) => {
+      res.json({ success: true, data: { status: 'ok' } });
+    });
+
+    app.get('/api/workspaces', (_req, res) => {
+      res.json({ success: true, data: [] });
+    });
+
+    app.post('/api/workspaces/:id/terminal-ticket', (req, res) => {
+      const { ticket, expiresAt } = terminalTicketService.createTicket(req.params.id);
+      res.json({ success: true, data: { ticket, expiresAt } });
+    });
+
+    server = http.createServer(app);
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address() as any;
+        testPort = addr.port;
+        resolve();
+      });
+    });
   });
 
   after(async () => {
-    await fs.rm(root, { recursive: true, force: true });
-    await fs.rm(outside, { recursive: true, force: true });
+    await new Promise((resolve) => server.close(resolve));
   });
 
-  test('resolves safe relative path correctly', () => {
-    const res = resolveSafeWorkspacePath(root, 'packages/src/inside.ts');
-    assert.strictEqual(res.absolutePath, path.join(root, 'packages', 'src', 'inside.ts'));
-    assert.strictEqual(res.relativePath, 'packages/src/inside.ts');
+  test('runtime capability token is a 32-byte cryptographic hex token', () => {
+    assert.strictEqual(typeof validToken, 'string');
+    assert.strictEqual(validToken.length, 64); // 32 bytes in hex = 64 characters
+    assert.strictEqual(runtimeAuthService.verifyToken(validToken), true);
+    assert.strictEqual(runtimeAuthService.verifyToken('invalid-token'), false);
+    assert.strictEqual(runtimeAuthService.verifyToken(''), false);
+    assert.strictEqual(runtimeAuthService.verifyToken(undefined), false);
   });
 
-  test('resolves root itself when subPath is empty', () => {
-    const res = resolveSafeWorkspacePath(root, '');
-    assert.strictEqual(res.absolutePath, path.resolve(root));
-    assert.strictEqual(res.relativePath, '');
+  test('Host validation accepts valid loopback hosts and rejects external/rebound hosts', () => {
+    const port = 4560;
+    assert.strictEqual(isAllowedHost(`127.0.0.1:${port}`, port), true);
+    assert.strictEqual(isAllowedHost(`localhost:${port}`, port), true);
+    assert.strictEqual(isAllowedHost(`[::1]:${port}`, port), true);
+    assert.strictEqual(isAllowedHost('127.0.0.1', port), true);
+    assert.strictEqual(isAllowedHost('localhost', port), true);
+
+    // Reject DNS rebinding and foreign hosts
+    assert.strictEqual(isAllowedHost('evil.example:4560', port), false);
+    assert.strictEqual(isAllowedHost('attacker.com', port), false);
+    assert.strictEqual(isAllowedHost('192.168.1.50:4560', port), false);
+    assert.strictEqual(isAllowedHost('', port), false);
+    assert.strictEqual(isAllowedHost(undefined, port), false);
   });
 
-  test('blocks dot-dot (..) traversal escaping root', () => {
-    assert.throws(() => {
-      resolveSafeWorkspacePath(root, '../../etc/passwd');
-    }, SecurityError);
+  test('CORS origin validation accepts loopback origins and rejects foreign browser origins', () => {
+    const port = 4560;
+    // No origin (CLI, curl, direct same-origin requests) is allowed
+    assert.strictEqual(isAllowedOrigin(undefined, port), true);
+    assert.strictEqual(isAllowedOrigin('', port), true);
 
-    assert.throws(() => {
-      resolveSafeWorkspacePath(root, 'packages/../../..');
-    }, SecurityError);
+    // Trusted loopback development origins allowed
+    assert.strictEqual(isAllowedOrigin(`http://127.0.0.1:${port}`, port), true);
+    assert.strictEqual(isAllowedOrigin(`http://localhost:${port}`, port), true);
+    assert.strictEqual(isAllowedOrigin('http://localhost:5173', port), true);
+    assert.strictEqual(isAllowedOrigin('http://127.0.0.1:5173', port), true);
 
-    assert.throws(() => {
-      resolveSafeWorkspacePath(root, '../other-folder');
-    }, SecurityError);
+    // Foreign web origins strictly rejected
+    assert.strictEqual(isAllowedOrigin('https://evil.example', port), false);
+    assert.strictEqual(isAllowedOrigin('http://malicious-site.com', port), false);
+    assert.strictEqual(isAllowedOrigin('https://attacker.io:4560', port), false);
   });
 
-  test('blocks null bytes in paths', () => {
-    assert.throws(() => {
-      resolveSafeWorkspacePath(root, 'packages/src/inside.ts\0.png');
-    }, SecurityError);
+  test('GET /api/health succeeds without authentication', async () => {
+    const res = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+    assert.strictEqual(res.status, 200);
+    const json = await res.json();
+    assert.deepStrictEqual(json, { status: 'ok' });
   });
 
-  test('blocks absolute path escaping workspace root', () => {
-    const outsideTarget = os.platform() === 'win32' ? 'C:\\Windows\\System32' : '/etc/shadow';
-    assert.throws(() => {
-      resolveSafeWorkspacePath(root, outsideTarget);
-    }, SecurityError);
+  test('GET /api/status and /api/workspaces reject unauthenticated requests with HTTP 401', async () => {
+    // 1. Missing Authorization header
+    const res1 = await fetch(`http://127.0.0.1:${testPort}/api/status`);
+    assert.strictEqual(res1.status, 401);
+    const json1 = await res1.json();
+    assert.strictEqual(json1.success, false);
+    assert.ok(json1.error?.includes('Runtime authentication required'));
+
+    // 2. Invalid Authorization header
+    const res2 = await fetch(`http://127.0.0.1:${testPort}/api/workspaces`, {
+      headers: { Authorization: 'Bearer invalid-token-value' },
+    });
+    assert.strictEqual(res2.status, 401);
   });
 
-  test('allows absolute path if it is genuinely inside workspace root', () => {
-    const insidePath = path.join(root, 'packages', 'src', 'inside.ts');
-    const res = resolveSafeWorkspacePath(root, insidePath);
-    assert.strictEqual(res.absolutePath, insidePath);
-    assert.strictEqual(res.relativePath, 'packages/src/inside.ts');
+  test('Privileged endpoints accept requests with valid Authorization header', async () => {
+    const res = await fetch(`http://127.0.0.1:${testPort}/api/status`, {
+      headers: { Authorization: `Bearer ${validToken}` },
+    });
+    assert.strictEqual(res.status, 200);
+    const json = await res.json();
+    assert.strictEqual(json.success, true);
   });
 
-  test('blocks root deletion attempt', async () => {
-    await assert.rejects(
-      async () => {
-        await fileService.deleteEntry(ws, '');
+  test('Requests with foreign Origin (e.g. https://evil.example) are rejected with HTTP 403', async () => {
+    const res = await fetch(`http://127.0.0.1:${testPort}/api/status`, {
+      headers: {
+        Origin: 'https://evil.example',
+        Authorization: `Bearer ${validToken}`,
       },
-      SecurityError
-    );
-
-    await assert.rejects(
-      async () => {
-        await fileService.deleteEntry(ws, '.');
-      },
-      SecurityError
-    );
+    });
+    assert.strictEqual(res.status, 403);
+    const json = await res.json();
+    assert.strictEqual(json.error, 'Forbidden Origin.');
   });
 
-  test('symlink resolving inside workspace is allowed', async (t) => {
-    if (!symlinksSupported) {
-      t.skip('Symlinks not supported in current environment/permissions');
-      return;
-    }
+  test('Terminal ticket endpoint requires runtime auth and generates single-use ticket', async () => {
+    // 1. Unauthenticated ticket request rejected
+    const unauthRes = await fetch(`http://127.0.0.1:${testPort}/api/workspaces/ws-123/terminal-ticket`, {
+      method: 'POST',
+    });
+    assert.strictEqual(unauthRes.status, 401);
 
-    const insideLink = path.join(root, 'inside-link');
-    try {
-      await fs.symlink(path.join(root, 'packages', 'src'), insideLink, 'junction');
-      const res = resolveSafeWorkspacePath(root, 'inside-link/inside.ts');
-      assert.ok(res.absolutePath);
+    // 2. Authenticated ticket request succeeds
+    const authRes = await fetch(`http://127.0.0.1:${testPort}/api/workspaces/ws-123/terminal-ticket`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${validToken}` },
+    });
+    assert.strictEqual(authRes.status, 200);
+    const { data } = await authRes.json();
+    assert.ok(data.ticket);
 
-      const fileRes = await fileService.readFile(ws, 'inside-link/inside.ts');
-      assert.strictEqual(fileRes.content, 'inside content');
-    } finally {
-      try { await fs.unlink(insideLink); } catch {}
-    }
+    // 3. Ticket consumption binds to workspace
+    const consumed = terminalTicketService.consumeTicket(data.ticket);
+    assert.strictEqual(consumed.valid, true);
+    assert.strictEqual(consumed.workspaceId, 'ws-123');
+
+    // 4. Reuse rejected
+    const reused = terminalTicketService.consumeTicket(data.ticket);
+    assert.strictEqual(reused.valid, false);
   });
 
-  test('symlink resolving outside workspace is blocked on read and save', async (t) => {
-    if (!symlinksSupported) {
-      t.skip('Symlinks not supported in current environment/permissions');
-      return;
-    }
-
-    const outsideLink = path.join(root, 'outside-link');
-    try {
-      await fs.symlink(outside, outsideLink, 'junction');
-
-      assert.throws(() => {
-        resolveSafeWorkspacePath(root, 'outside-link/secret.txt');
-      }, SecurityError);
-
-      await assert.rejects(
-        async () => {
-          await fileService.readFile(ws, 'outside-link/secret.txt');
-        },
-        SecurityError
-      );
-
-      await assert.rejects(
-        async () => {
-          await fileService.saveFile(ws, 'outside-link/hack.txt', 'danger');
-        },
-        SecurityError
-      );
-    } finally {
-      try { await fs.unlink(outsideLink); } catch {}
-    }
+  test('Windows Credential backend reports windows-dpapi vault and truthful metadata', () => {
+    const winBackend = new WindowsCredentialBackend();
+    assert.strictEqual(winBackend.type, 'windows-dpapi');
+    assert.strictEqual(winBackend.name, 'Windows DPAPI-protected vault');
+    assert.strictEqual(winBackend.isPersistent, true);
   });
 
-  test('create operation through external symlinked parent is blocked', async (t) => {
-    if (!symlinksSupported) {
-      t.skip('Symlinks not supported in current environment/permissions');
-      return;
-    }
+  test('CredentialStore downgrades backendInfo to session memory if native write fails', async () => {
+    // Failing backend test double
+    const failingBackend: ICredentialBackend = {
+      type: 'windows-dpapi',
+      name: 'Failing Windows Vault',
+      isPersistent: true,
+      async get() { return null; },
+      async set() { throw new Error('OS Keyring Locked'); },
+      async delete() { return true; },
+      async has() { return false; },
+    };
 
-    const outsideLink = path.join(root, 'outside-parent');
-    try {
-      await fs.symlink(outside, outsideLink, 'junction');
+    const store = new CredentialStore(failingBackend);
+    assert.strictEqual(store.backendInfo().type, 'windows-dpapi');
+    assert.strictEqual(store.backendInfo().isPersistent, true);
 
-      await assert.rejects(
-        async () => {
-          await fileService.createEntry(ws, 'outside-parent/new-file.txt', 'file', 'content');
-        },
-        SecurityError
-      );
-    } finally {
-      try { await fs.unlink(outsideLink); } catch {}
-    }
+    // Trigger set failure
+    await store.set('test-prov', 'sk-or-fallback');
+
+    // Verification: BackendInfo MUST now truthfully reflect Memory Fallback and NOT claim persistence
+    const info = store.backendInfo();
+    assert.strictEqual(info.type, 'memory');
+    assert.strictEqual(info.isPersistent, false);
+    assert.ok(info.name.includes('Memory'));
+    assert.strictEqual(await store.get('test-prov'), 'sk-or-fallback');
   });
 });

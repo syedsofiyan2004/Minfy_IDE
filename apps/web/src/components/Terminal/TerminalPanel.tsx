@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { TerminalClientMessage, TerminalServerMessage } from '@minfy/shared';
 import { RotateCw, X, Maximize2, Minimize2, Terminal as TermIcon } from 'lucide-react';
+import { api } from '../../api/client.js';
 
 interface TerminalPanelProps {
   workspaceId: string | null;
@@ -20,7 +21,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ workspaceId, isOpe
   const [connected, setConnected] = useState<boolean>(false);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
 
-  const connectWebSocket = useCallback(() => {
+  const connectWebSocket = useCallback(async () => {
     if (!workspaceId) return;
 
     if (wsRef.current) {
@@ -30,42 +31,49 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ workspaceId, isOpe
     const term = termRef.current;
     if (!term) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    // If running in vite dev port 5173, runtime ws is on 4560 (or proxied)
-    const wsUrl = `${protocol}//${host}/ws/terminal?workspaceId=${workspaceId}`;
+    try {
+      // 1. Obtain single-use short-lived terminal ticket via authenticated HTTP
+      const { ticket } = await api.createTerminalTicket(workspaceId);
 
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      const wsUrl = `${protocol}//${host}/ws/terminal?ticket=${encodeURIComponent(ticket)}`;
 
-    ws.onopen = () => {
-      setConnected(true);
-      term.focus();
-    };
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
-    ws.onmessage = (event) => {
-      try {
-        const msg: TerminalServerMessage = JSON.parse(event.data);
-        if (msg.type === 'output' && msg.data) {
-          term.write(msg.data);
-        } else if (msg.type === 'exit') {
-          term.write(`\r\n\x1b[90m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
-          setConnected(false);
-        } else if (msg.type === 'error') {
-          term.write(`\r\n\x1b[31m[Terminal Error: ${msg.error}]\x1b[0m\r\n`);
+      ws.onopen = () => {
+        setConnected(true);
+        term.focus();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg: TerminalServerMessage = JSON.parse(event.data);
+          if (msg.type === 'output' && msg.data) {
+            term.write(msg.data);
+          } else if (msg.type === 'exit') {
+            term.write(`\r\n\x1b[90m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
+            setConnected(false);
+          } else if (msg.type === 'error') {
+            term.write(`\r\n\x1b[31m[Terminal Error: ${msg.error}]\x1b[0m\r\n`);
+          }
+        } catch {
+          term.write(event.data);
         }
-      } catch {
-        term.write(event.data);
-      }
-    };
+      };
 
-    ws.onclose = () => {
-      setConnected(false);
-    };
+      ws.onclose = () => {
+        setConnected(false);
+      };
 
-    ws.onerror = () => {
+      ws.onerror = () => {
+        setConnected(false);
+      };
+    } catch (err: any) {
+      term.write(`\r\n\x1b[31m[Terminal Auth Error: ${err.message || 'Failed to acquire authorization ticket'}]\x1b[0m\r\n`);
       setConnected(false);
-    };
+    }
   }, [workspaceId]);
 
   const handleRestart = () => {

@@ -8,7 +8,7 @@ import { CONFIG } from '../config.js';
 const execFileAsync = promisify(execFile);
 
 export type CredentialBackendType =
-  | 'windows-credential-manager'
+  | 'windows-dpapi'
   | 'macos-keychain'
   | 'linux-secret-service'
   | 'memory'
@@ -62,12 +62,12 @@ export class MemoryCredentialBackend implements ICredentialBackend {
 }
 
 /**
- * Windows DPAPI / Credential Manager Backend
- * Uses OS-level DPAPI (Data Protection API) scoped to CurrentUser.
+ * Windows DPAPI-Protected Vault Backend
+ * Encrypts secrets using Windows DPAPI (Data Protection API) scoped to CurrentUser.
  */
 export class WindowsCredentialBackend implements ICredentialBackend {
-  public readonly type = 'windows-credential-manager' as const;
-  public readonly name = 'Windows Credential Manager (DPAPI)';
+  public readonly type = 'windows-dpapi' as const;
+  public readonly name = 'Windows DPAPI-protected vault';
   public readonly isPersistent = true;
 
   private encFile: string;
@@ -276,6 +276,7 @@ export class LinuxSecretServiceBackend implements ICredentialBackend {
 export class CredentialStore {
   private backend: ICredentialBackend;
   private memoryCache = new Map<string, string>();
+  private isDegradedToMemory = false;
 
   constructor(backend?: ICredentialBackend) {
     if (backend) {
@@ -329,7 +330,10 @@ export class CredentialStore {
     try {
       await this.backend.set(providerId, trimmed);
     } catch (err: any) {
-      console.warn(`[CredentialStore] Failed to write to native backend (${err.message}), retaining in session memory`);
+      console.warn(`[CredentialStore] Failed to write to native backend (${err.message}), falling back truthfully to session memory`);
+      this.isDegradedToMemory = true;
+      this.backend = new MemoryCredentialBackend();
+      await this.backend.set(providerId, trimmed);
     }
   }
 
@@ -350,6 +354,13 @@ export class CredentialStore {
   }
 
   public backendInfo(): CredentialBackendInfo {
+    if (this.isDegradedToMemory) {
+      return {
+        type: 'memory',
+        name: 'Session Memory (Fallback)',
+        isPersistent: false,
+      };
+    }
     return {
       type: this.backend.type,
       name: this.backend.name,
@@ -373,7 +384,12 @@ export class CredentialStore {
       return;
     }
     this.memoryCache.set(providerId, trimmed);
-    this.backend.set(providerId, trimmed).catch(() => {});
+    this.backend.set(providerId, trimmed).catch((err) => {
+      console.warn('[CredentialStore] Async native persist error, downgrading to session memory');
+      this.isDegradedToMemory = true;
+      this.backend = new MemoryCredentialBackend();
+      this.backend.set(providerId, trimmed).catch(() => {});
+    });
   }
 
   public deleteCredential(providerId: string): boolean {
