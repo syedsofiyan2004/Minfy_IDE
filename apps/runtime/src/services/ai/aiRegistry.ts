@@ -7,6 +7,8 @@ import {
 } from '@minfy/shared';
 import { AIProviderAdapter } from './types.js';
 import { OllamaAdapter } from './adapters/ollamaAdapter.js';
+import { OpenRouterAdapter } from './adapters/openRouterAdapter.js';
+import { credentialStore } from '../credentialStore.js';
 
 export class AIProviderRegistry {
   private adapters: Map<string, AIProviderAdapter> = new Map();
@@ -14,8 +16,10 @@ export class AIProviderRegistry {
   private usageHistory: AIUsage[] = [];
 
   constructor() {
-    // Register default Milestone 3 local adapter
+    // Register Milestone 3 local adapter
     this.registerAdapter(new OllamaAdapter());
+    // Register Milestone 4 remote OpenAI-compatible router
+    this.registerAdapter(new OpenRouterAdapter());
   }
 
   public registerAdapter(adapter: AIProviderAdapter) {
@@ -32,6 +36,9 @@ export class AIProviderRegistry {
     for (const adapter of this.adapters.values()) {
       try {
         const { status, reason, modelsCount } = await adapter.getStatus();
+        const requiresAuth = (adapter as any).requiresAuth ?? false;
+        const connected = requiresAuth ? credentialStore.hasCredential(adapter.id) : status === 'available';
+
         providers.push({
           id: adapter.id,
           name: adapter.name,
@@ -39,6 +46,8 @@ export class AIProviderRegistry {
           status,
           statusReason: reason,
           modelsCount,
+          requiresAuth,
+          connected,
         });
       } catch (err: any) {
         providers.push({
@@ -48,6 +57,7 @@ export class AIProviderRegistry {
           status: 'unavailable',
           statusReason: err.message || 'Provider check failed',
           modelsCount: 0,
+          connected: false,
         });
       }
     }

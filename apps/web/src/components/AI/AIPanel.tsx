@@ -17,6 +17,8 @@ import {
   Zap,
   Terminal,
   Cloud,
+  Key,
+  LogOut,
 } from 'lucide-react';
 
 interface Message {
@@ -29,7 +31,9 @@ interface Message {
 
 export const AIPanel: React.FC = () => {
   const [providers, setProviders] = useState<AIProvider[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState<string>('ollama');
+  const [selectedProvider, setSelectedProvider] = useState<string>(() => {
+    return localStorage.getItem('minfy_ai_provider') || 'ollama';
+  });
   const [models, setModels] = useState<AIModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [loadingProviders, setLoadingProviders] = useState<boolean>(false);
@@ -38,25 +42,36 @@ export const AIPanel: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
 
+  // Connection form state for remote providers (OpenRouter)
+  const [apiKeyInput, setApiKeyInput] = useState<string>('');
+  const [isConnecting, setIsConnecting] = useState<boolean>(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+
   const activeProvider = providers.find((p) => p.id === selectedProvider);
-  const isAvailable = activeProvider?.status === 'available';
+  const requiresAuth = activeProvider?.requiresAuth ?? false;
+  const isConnected = requiresAuth ? (activeProvider?.connected ?? false) : true;
+  const isAvailable = activeProvider?.status === 'available' || isConnected;
 
   const currentModel = models.find((m) => m.id === selectedModel);
-  const isLocalExecution = currentModel ? currentModel.executionLocation === 'local' : true;
-  const isCloudExecution = currentModel?.executionLocation === 'cloud';
+  const isLocalExecution = currentModel ? currentModel.executionLocation === 'local' : selectedProvider === 'ollama';
+  const isFreeModel = currentModel ? currentModel.billingType === 'free' : false;
 
   // Load providers on mount
-  const loadProviders = async () => {
+  const loadProviders = async (targetProviderId?: string) => {
     try {
       setLoadingProviders(true);
       const res = await api.listAIProviders();
       setProviders(res.providers);
 
-      const defaultProv = res.providers[0]?.id || 'ollama';
-      setSelectedProvider(defaultProv);
+      const targetId = targetProviderId || selectedProvider;
+      const validProv = res.providers.some((p) => p.id === targetId)
+        ? targetId
+        : res.providers[0]?.id || 'ollama';
 
-      // Load models for provider
-      await loadModels(defaultProv);
+      setSelectedProvider(validProv);
+      localStorage.setItem('minfy_ai_provider', validProv);
+
+      await loadModels(validProv);
     } catch {
       // Ignore network failure
     } finally {
@@ -88,10 +103,45 @@ export const AIPanel: React.FC = () => {
     loadProviders();
   }, []);
 
+  const handleSelectProvider = async (providerId: string) => {
+    setSelectedProvider(providerId);
+    localStorage.setItem('minfy_ai_provider', providerId);
+    setConnectError(null);
+    setApiKeyInput('');
+    await loadModels(providerId);
+  };
+
   const handleSelectModel = (modelId: string) => {
     setSelectedModel(modelId);
     if (selectedProvider) {
       localStorage.setItem(`minfy_ai_model_${selectedProvider}`, modelId);
+    }
+  };
+
+  const handleConnectProvider = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedKey = apiKeyInput.trim();
+    if (!trimmedKey) return;
+
+    try {
+      setIsConnecting(true);
+      setConnectError(null);
+      await api.connectAIProvider(selectedProvider, trimmedKey);
+      setApiKeyInput('');
+      await loadProviders(selectedProvider);
+    } catch (err: any) {
+      setConnectError(err.message || 'Connection failed. Please check your API key.');
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const handleDisconnectProvider = async () => {
+    try {
+      await api.disconnectAIProvider(selectedProvider);
+      await loadProviders(selectedProvider);
+    } catch (err: any) {
+      console.warn('Disconnect error:', err);
     }
   };
 
@@ -245,7 +295,7 @@ export const AIPanel: React.FC = () => {
         </div>
 
         <button
-          onClick={loadProviders}
+          onClick={() => loadProviders()}
           title="Refresh AI Provider Status"
           style={{ padding: '3px', borderRadius: '3px', color: 'var(--text-muted)' }}
         >
@@ -253,7 +303,7 @@ export const AIPanel: React.FC = () => {
         </button>
       </div>
 
-      {/* Provider & Execution Semantics Bar */}
+      {/* Provider Selector & Status Bar */}
       <div
         style={{
           padding: '8px 12px',
@@ -261,61 +311,132 @@ export const AIPanel: React.FC = () => {
           borderBottom: '1px solid var(--border-subtle)',
           display: 'flex',
           flexDirection: 'column',
-          gap: '6px',
+          gap: '8px',
         }}
       >
-        {/* Provider Status Row */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
-            {isCloudExecution ? (
-              <Cloud size={13} color="var(--info)" />
+        {/* Provider Switcher Row */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: 0 }}>
+            {selectedProvider === 'openrouter' ? (
+              <Cloud size={14} color="var(--info)" />
             ) : (
-              <Cpu size={13} color="var(--minfy-blue-primary)" />
+              <Cpu size={14} color="var(--minfy-blue-primary)" />
             )}
-            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-              {activeProvider?.name || 'Ollama'}
-            </span>
-            <span
+            <select
+              value={selectedProvider}
+              onChange={(e) => handleSelectProvider(e.target.value)}
+              disabled={isGenerating}
               style={{
-                fontSize: '11px',
-                color: isAvailable ? 'var(--success)' : 'var(--danger)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
+                flex: 1,
+                padding: '3px 6px',
+                fontSize: '12px',
+                fontWeight: 600,
+                borderRadius: '4px',
+                backgroundColor: 'var(--surface-2)',
+                border: '1px solid var(--border-default)',
+                color: 'var(--text-primary)',
+                outline: 'none',
+                cursor: 'pointer',
               }}
             >
-              <span
-                style={{
-                  width: '6px',
-                  height: '6px',
-                  borderRadius: '3px',
-                  backgroundColor: isAvailable ? 'var(--success)' : 'var(--danger)',
-                }}
-              />
-              {isAvailable ? 'Available' : 'Offline'}
-            </span>
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} {p.type === 'local' ? '(Local)' : '(Router)'}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {/* Accurate Execution & Billing Pill */}
-          {isAvailable && currentModel && (
-            <span
-              style={{
-                fontSize: '10px',
-                padding: '1px 6px',
-                borderRadius: '8px',
-                backgroundColor: isLocalExecution ? 'var(--surface-3)' : 'rgba(88, 166, 255, 0.15)',
-                color: isLocalExecution ? 'var(--minfy-yellow-accent)' : 'var(--info)',
-                fontWeight: 600,
-              }}
-            >
-              {isLocalExecution ? 'Local • ₹0 Cost' : 'Ollama Cloud'}
-            </span>
-          )}
+          {/* Connected / Available Pill */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+            {requiresAuth ? (
+              isConnected ? (
+                <button
+                  onClick={handleDisconnectProvider}
+                  title="Disconnect OpenRouter API Key"
+                  style={{
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)',
+                    fontSize: '10px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <LogOut size={10} />
+                  <span>Disconnect</span>
+                </button>
+              ) : (
+                <span
+                  style={{
+                    fontSize: '10px',
+                    color: 'var(--text-disabled)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  ○ Not Connected
+                </span>
+              )
+            ) : (
+              <span
+                style={{
+                  fontSize: '10px',
+                  color: isAvailable ? 'var(--success)' : 'var(--danger)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+              >
+                <span
+                  style={{
+                    width: '6px',
+                    height: '6px',
+                    borderRadius: '3px',
+                    backgroundColor: isAvailable ? 'var(--success)' : 'var(--danger)',
+                  }}
+                />
+                {isAvailable ? 'Available' : 'Offline'}
+              </span>
+            )}
+          </div>
         </div>
 
-        {/* Model Selector Row */}
-        {isAvailable && models.length > 0 && (
-          <div style={{ marginTop: '2px' }}>
+        {/* Model Selector Row (when connected/available) */}
+        {isConnected && isAvailable && models.length > 0 && (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Model
+              </span>
+              {/* Cost/Location Pill */}
+              <span
+                style={{
+                  fontSize: '10px',
+                  padding: '1px 5px',
+                  borderRadius: '6px',
+                  backgroundColor: isFreeModel
+                    ? 'rgba(63, 185, 80, 0.15)'
+                    : isLocalExecution
+                    ? 'var(--surface-3)'
+                    : 'rgba(88, 166, 255, 0.15)',
+                  color: isFreeModel
+                    ? 'var(--success)'
+                    : isLocalExecution
+                    ? 'var(--minfy-yellow-accent)'
+                    : 'var(--info)',
+                  fontWeight: 600,
+                }}
+              >
+                {isFreeModel ? 'Free • Remote' : isLocalExecution ? 'Local • ₹0 Cost' : 'Cloud Router'}
+              </span>
+            </div>
+
             <select
               value={selectedModel}
               onChange={(e) => handleSelectModel(e.target.value)}
@@ -335,7 +456,7 @@ export const AIPanel: React.FC = () => {
             >
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.displayName} {m.executionLocation === 'cloud' ? '☁ [Cloud]' : '💻 [Local]'}
+                  {m.displayName} {m.billingType === 'free' ? '🎁 [Free]' : m.executionLocation === 'cloud' ? '☁ [Cloud]' : '💻 [Local]'}
                 </option>
               ))}
             </select>
@@ -344,17 +465,22 @@ export const AIPanel: React.FC = () => {
             <div
               style={{
                 fontSize: '10px',
-                color: isCloudExecution ? 'var(--info)' : 'var(--text-muted)',
+                color: isFreeModel ? 'var(--success)' : !isLocalExecution ? 'var(--info)' : 'var(--text-muted)',
                 marginTop: '4px',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
               }}
             >
-              {isCloudExecution ? (
+              {isFreeModel ? (
+                <>
+                  <Sparkles size={10} color="var(--success)" />
+                  <span>OpenRouter Free • Remote inference • Free token pricing</span>
+                </>
+              ) : !isLocalExecution ? (
                 <>
                   <Cloud size={10} />
-                  <span>Remote inference via Ollama Cloud • Provider quota applies</span>
+                  <span>Remote inference via {activeProvider?.name} • Provider quota applies</span>
                 </>
               ) : (
                 <>
@@ -378,7 +504,83 @@ export const AIPanel: React.FC = () => {
           gap: '12px',
         }}
       >
-        {!isAvailable ? (
+        {requiresAuth && !isConnected ? (
+          /* Connect Provider Card */
+          <div
+            style={{
+              padding: '16px 12px',
+              backgroundColor: 'var(--surface-1)',
+              borderRadius: '6px',
+              border: '1px solid var(--border-subtle)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Key size={18} color="var(--info)" />
+              <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>
+                Connect {activeProvider?.name || 'OpenRouter'}
+              </div>
+            </div>
+
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+              Enter your {activeProvider?.name} API key to access remote models, including OpenRouter Free models.
+            </span>
+
+            <form onSubmit={handleConnectProvider} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <input
+                type="password"
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                placeholder="sk-or-v1-..."
+                disabled={isConnecting}
+                style={{
+                  width: '100%',
+                  padding: '6px 10px',
+                  fontSize: '12px',
+                  borderRadius: '4px',
+                  backgroundColor: 'var(--surface-2)',
+                  border: '1px solid var(--border-default)',
+                  color: 'var(--text-primary)',
+                  outline: 'none',
+                  fontFamily: 'var(--font-mono)',
+                }}
+              />
+
+              {connectError && (
+                <span style={{ fontSize: '11px', color: 'var(--danger)' }}>
+                  {connectError}
+                </span>
+              )}
+
+              <button
+                type="submit"
+                disabled={isConnecting || !apiKeyInput.trim()}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '4px',
+                  backgroundColor: isConnecting || !apiKeyInput.trim() ? 'var(--surface-3)' : 'var(--minfy-blue-primary)',
+                  color: isConnecting || !apiKeyInput.trim() ? 'var(--text-disabled)' : '#ffffff',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  border: 'none',
+                  cursor: isConnecting || !apiKeyInput.trim() ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                }}
+              >
+                {isConnecting ? 'Verifying...' : 'Connect'}
+              </button>
+            </form>
+
+            <span style={{ fontSize: '10px', color: 'var(--text-disabled)', lineHeight: '1.3' }}>
+              🔒 Credentials are saved securely by the local Minfy runtime in ~/.minfy, not in browser storage.
+            </span>
+          </div>
+        ) : !isAvailable && selectedProvider === 'ollama' ? (
           <div
             style={{
               padding: '24px 12px',
@@ -396,7 +598,7 @@ export const AIPanel: React.FC = () => {
               Ollama is Offline
             </div>
             <span>
-              Ollama is not running on this machine. Start Ollama to use local AI models.
+              Ollama is not running on this machine. Start Ollama or switch to OpenRouter above.
             </span>
             <div
               style={{
@@ -426,23 +628,13 @@ export const AIPanel: React.FC = () => {
           >
             <Terminal size={28} color="var(--info)" />
             <div style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
-              No Local Models Installed
+              No Models Discovered
             </div>
             <span>
-              Ollama is running, but no models are installed yet.
+              {selectedProvider === 'ollama'
+                ? 'Ollama is running, but no local models are installed yet.'
+                : 'No models discovered for OpenRouter.'}
             </span>
-            <div
-              style={{
-                backgroundColor: 'var(--surface-1)',
-                padding: '6px 10px',
-                borderRadius: '4px',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '11px',
-                color: 'var(--minfy-yellow-accent)',
-              }}
-            >
-              ollama pull llama3
-            </div>
           </div>
         ) : messages.length === 0 ? (
           <div
@@ -462,8 +654,10 @@ export const AIPanel: React.FC = () => {
               Ask Minfy
             </div>
             <span>
-              {isCloudExecution
-                ? 'Ollama Cloud provider ready for remote inference.'
+              {isFreeModel
+                ? 'OpenRouter Free model ready for remote inference.'
+                : !isLocalExecution
+                ? 'Remote AI provider ready. Enter a question or task below.'
                 : 'Your local AI provider is ready. Enter a question or task below.'}
             </span>
           </div>
@@ -529,7 +723,7 @@ export const AIPanel: React.FC = () => {
                   {msg.usage.outputTokenCount !== undefined && (
                     <span>• {msg.usage.outputTokenCount} tokens</span>
                   )}
-                  <span>• {msg.usage.costDescription || (msg.usage.executionLocation === 'local' ? 'Local • ₹0 API cost' : 'Remote inference')}</span>
+                  <span>• {msg.usage.costDescription || (msg.usage.billingType === 'free' ? 'Free token pricing' : msg.usage.executionLocation === 'local' ? 'Local • ₹0 API cost' : 'Remote inference')}</span>
                 </div>
               )}
             </div>
@@ -554,13 +748,15 @@ export const AIPanel: React.FC = () => {
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={
-            !isAvailable
-              ? 'Ollama offline...'
+            requiresAuth && !isConnected
+              ? 'Connect provider to start...'
+              : !isAvailable
+              ? 'Provider offline...'
               : models.length === 0
-              ? 'No models installed...'
+              ? 'No models available...'
               : 'Ask a question (Ctrl+Enter to send)...'
           }
-          disabled={!isAvailable || models.length === 0 || isGenerating}
+          disabled={!isConnected || !isAvailable || models.length === 0 || isGenerating}
           rows={3}
           style={{
             width: '100%',
@@ -604,7 +800,7 @@ export const AIPanel: React.FC = () => {
           ) : (
             <button
               onClick={handleSendPrompt}
-              disabled={!isAvailable || models.length === 0 || !prompt.trim()}
+              disabled={!isConnected || !isAvailable || models.length === 0 || !prompt.trim()}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -612,18 +808,18 @@ export const AIPanel: React.FC = () => {
                 padding: '5px 12px',
                 borderRadius: '4px',
                 backgroundColor:
-                  !isAvailable || models.length === 0 || !prompt.trim()
+                  !isConnected || !isAvailable || models.length === 0 || !prompt.trim()
                     ? 'var(--surface-3)'
                     : 'var(--minfy-blue-primary)',
                 border: 'none',
                 color:
-                  !isAvailable || models.length === 0 || !prompt.trim()
+                  !isConnected || !isAvailable || models.length === 0 || !prompt.trim()
                     ? 'var(--text-disabled)'
                     : '#ffffff',
                 fontSize: '12px',
                 fontWeight: 600,
                 cursor:
-                  !isAvailable || models.length === 0 || !prompt.trim()
+                  !isConnected || !isAvailable || models.length === 0 || !prompt.trim()
                     ? 'not-allowed'
                     : 'pointer',
               }}

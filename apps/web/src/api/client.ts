@@ -12,6 +12,7 @@ import {
   AIGenerateRequest,
   AIStreamEvent,
   AIUsage,
+  ConnectProviderResponse,
 } from '@minfy/shared';
 
 const API_BASE = '/api';
@@ -102,13 +103,26 @@ export const api = {
     });
   },
 
-  // AI Provider Foundation (Milestone 3)
+  // AI Provider Foundation (Milestones 3, 3.1 & 4)
   listAIProviders: async (): Promise<AIProvidersResponse> => {
     return fetchJson<AIProvidersResponse>(`${API_BASE}/ai/providers`);
   },
 
   listAIModels: async (providerId: string): Promise<AIModelsResponse> => {
     return fetchJson<AIModelsResponse>(`${API_BASE}/ai/providers/${encodeURIComponent(providerId)}/models`);
+  },
+
+  connectAIProvider: async (providerId: string, apiKey: string): Promise<ConnectProviderResponse> => {
+    return fetchJson<ConnectProviderResponse>(`${API_BASE}/ai/providers/${encodeURIComponent(providerId)}/connect`, {
+      method: 'POST',
+      body: JSON.stringify({ apiKey }),
+    });
+  },
+
+  disconnectAIProvider: async (providerId: string): Promise<{ connected: boolean }> => {
+    return fetchJson<{ connected: boolean }>(`${API_BASE}/ai/providers/${encodeURIComponent(providerId)}/connection`, {
+      method: 'DELETE',
+    });
   },
 
   streamAIGenerate: async (
@@ -151,9 +165,11 @@ export const api = {
 
       for (const part of parts) {
         const trimmed = part.trim();
-        if (trimmed.startsWith('data: ')) {
+        if (trimmed.startsWith('data:')) {
+          const dataStr = trimmed.replace(/^data:\s*/, '');
+          if (dataStr === '[DONE]') continue;
           try {
-            const event: AIStreamEvent = JSON.parse(trimmed.slice(6));
+            const event: AIStreamEvent = JSON.parse(dataStr);
             onEvent(event);
           } catch {
             // ignore partial json

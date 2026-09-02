@@ -14,6 +14,8 @@ export interface AIProvider {
   statusReason?: string;
   endpoint?: string;
   modelsCount?: number;
+  requiresAuth?: boolean;
+  connected?: boolean;
 }
 
 export interface AIModel {
@@ -69,4 +71,13 @@ export interface AIProvidersResponse {
 export interface AIModelsResponse {
   providerId: string;
   models: AIModel[];
+}
+
+export interface ConnectProviderRequest {
+  apiKey: string;
+}
+
+export interface ConnectProviderResponse {
+  connected: boolean;
+  modelsCount?: number;
 }
