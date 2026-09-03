@@ -104,7 +104,7 @@ export const BedrockConfigModal: React.FC<BedrockConfigModalProps> = ({
       if (res.connected) {
         setTestResult({
           success: true,
-          message: `Connected to AWS Bedrock in ${effRegion}. Discovered ${res.modelsCount ?? 0} inference targets.`,
+          message: `Connected to AWS Bedrock in ${effRegion}. Discovered ${res.modelsCount ?? 0} Bedrock inference targets.`,
           identity: res.identity,
         });
       } else {

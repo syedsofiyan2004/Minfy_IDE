@@ -20,6 +20,35 @@ import { AIProviderAdapter } from '../types.js';
 import { bedrockConfigService } from './bedrockConfigService.js';
 import { bedrockClientFactory } from './bedrockClientFactory.js';
 
+// Well-known Bedrock model families with authoritative AWS Converse API support
+const CONVERSE_SUPPORTED_FAMILIES = [
+  'anthropic.claude',
+  'amazon.nova',
+  'amazon.titan-text',
+  'meta.llama',
+  'mistral.',
+  'cohere.command',
+  'ai21.jamba',
+];
+
+export function isKnownConverseSupported(modelId: string): boolean {
+  if (!modelId) return false;
+  const lower = modelId.toLowerCase();
+  return CONVERSE_SUPPORTED_FAMILIES.some((family) => lower.includes(family));
+}
+
+export interface BedrockConnectionSnapshot {
+  connected: boolean;
+  status: AIProviderStatus;
+  reason?: string;
+  authSource?: string;
+  region?: string;
+  profile?: string;
+  modelsCount?: number;
+  timestamp: number;
+  key: string;
+}
+
 export class BedrockAdapter implements AIProviderAdapter {
   public readonly id = 'bedrock';
   public readonly name = 'AWS Bedrock';
@@ -27,27 +56,22 @@ export class BedrockAdapter implements AIProviderAdapter {
   public readonly source: ProviderManifestSource = 'built-in';
   public readonly protocol = 'bedrock';
 
+  // Unified connection & status snapshot cache
+  private connectionSnapshot: BedrockConnectionSnapshot | null = null;
   // Cache discovery results for 60s
   private modelCache: { models: AIModel[]; timestamp: number; key: string } | null = null;
-  // Cache status for 30s
-  private statusCache: {
-    status: AIProviderStatus;
-    reason?: string;
-    modelsCount?: number;
-    timestamp: number;
-    key: string;
-  } | null = null;
+  // Session memory for targets that fail specifically because Converse is not supported
+  private sessionIncompatibleTargets: Set<string> = new Set();
 
   constructor() {
     bedrockConfigService.onConfigChange(() => {
-      this.modelCache = null;
-      this.statusCache = null;
+      this.invalidateCache();
     });
   }
 
   public invalidateCache(): void {
+    this.connectionSnapshot = null;
     this.modelCache = null;
-    this.statusCache = null;
   }
 
   private getConfigKey(): string {
@@ -98,8 +122,31 @@ export class BedrockAdapter implements AIProviderAdapter {
       return 'The selected Bedrock model or inference target is not available in the selected Region or profile.';
     }
 
+    // Service Unavailable
+    if (
+      code === 'ServiceUnavailableException' ||
+      code === 'serviceUnavailableException' ||
+      message.includes('ServiceUnavailable')
+    ) {
+      return 'Amazon Bedrock is temporarily unavailable. Try again shortly.';
+    }
+
+    // Model Not Ready
+    if (code === 'ModelNotReadyException' || message.includes('ModelNotReady')) {
+      return 'This Bedrock model is not ready. Try again shortly.';
+    }
+
+    // Model Timeout
+    if (code === 'ModelTimeoutException' || message.includes('ModelTimeout')) {
+      return 'Amazon Bedrock request timed out.';
+    }
+
     // Validation Exception
     if (code === 'ValidationException' || message.includes('ValidationException')) {
+      const lower = message.toLowerCase();
+      if (lower.includes('converse') || lower.includes('not supported') || lower.includes('unsupported model')) {
+        return 'This Bedrock model does not support the Converse API.';
+      }
       return `Bedrock request validation failed: ${message.replace(/^ValidationException:\s*/i, '')}`;
     }
 
@@ -118,40 +165,52 @@ export class BedrockAdapter implements AIProviderAdapter {
   }
 
   /**
-   * Determine connection state through AWS STS identity and Bedrock control plane checks.
+   * Unified connection & status snapshot. Both getStatus() and getConnectionState()
+   * read from this cached snapshot to eliminate duplicate AWS network calls.
    */
-  public async getConnectionState(): Promise<{
-    connected: boolean;
-    authSource?: string;
-    reason?: string;
-    region?: string;
-    profile?: string;
-  }> {
+  public async getConnectionSnapshot(options?: { fresh?: boolean }): Promise<BedrockConnectionSnapshot> {
     const config = bedrockConfigService.getConfig();
+    const key = this.getConfigKey();
+    const now = Date.now();
+
+    if (!options?.fresh && this.connectionSnapshot && this.connectionSnapshot.key === key && (now - this.connectionSnapshot.timestamp < 30000)) {
+      return this.connectionSnapshot;
+    }
 
     if (!config.region) {
-      return {
+      const snap: BedrockConnectionSnapshot = {
         connected: false,
+        status: 'unavailable',
         reason: 'AWS Region required.',
+        authSource: undefined,
         region: config.region,
         profile: config.profile,
+        modelsCount: 0,
+        timestamp: now,
+        key,
       };
+      this.connectionSnapshot = snap;
+      return snap;
     }
 
     // 1. Verify AWS Identity via STS GetCallerIdentity
     const sts = bedrockClientFactory.getSTSClient(config.region, config.profile);
-    let identityArn: string | undefined;
-
     try {
-      const stsRes = await sts.send(new GetCallerIdentityCommand({}));
-      identityArn = stsRes.Arn;
+      await sts.send(new GetCallerIdentityCommand({}));
     } catch (err: any) {
-      return {
+      const snap: BedrockConnectionSnapshot = {
         connected: false,
+        status: 'unavailable',
         reason: this.normalizeError(err, 'auth'),
+        authSource: undefined,
         region: config.region,
         profile: config.profile,
+        modelsCount: 0,
+        timestamp: now,
+        key,
       };
+      this.connectionSnapshot = snap;
+      return snap;
     }
 
     // 2. Verify Bedrock Control Plane Authorization via ListFoundationModels (limit: 1)
@@ -159,20 +218,62 @@ export class BedrockAdapter implements AIProviderAdapter {
     try {
       await bedrock.send(new ListFoundationModelsCommand({ byOutputModality: 'TEXT' }));
     } catch (err: any) {
-      return {
+      // STS succeeded, but Bedrock is denied
+      const snap: BedrockConnectionSnapshot = {
         connected: false,
-        authSource: identityArn ? `AWS Identity: ${identityArn}` : undefined,
+        status: 'unavailable',
         reason: this.normalizeError(err, 'control-plane'),
+        authSource: 'AWS identity resolved', // SAFE: No ARN, account ID, or UserId exposed!
         region: config.region,
         profile: config.profile,
+        modelsCount: 0,
+        timestamp: now,
+        key,
       };
+      this.connectionSnapshot = snap;
+      return snap;
     }
 
-    return {
+    // 3. Both succeeded
+    let modelsCount = 0;
+    try {
+      const models = await this.listModels();
+      modelsCount = models.length;
+    } catch {}
+
+    const safeAuthSource = config.profile ? `AWS Profile: ${config.profile}` : 'AWS Default Credentials';
+
+    const snap: BedrockConnectionSnapshot = {
       connected: true,
-      authSource: config.profile ? `AWS Profile: ${config.profile}` : 'AWS Default Credentials',
+      status: 'available',
+      authSource: safeAuthSource,
       region: config.region,
       profile: config.profile,
+      modelsCount,
+      timestamp: now,
+      key,
+    };
+    this.connectionSnapshot = snap;
+    return snap;
+  }
+
+  /**
+   * Determine connection state through AWS STS identity and Bedrock control plane checks.
+   */
+  public async getConnectionState(options?: { fresh?: boolean }): Promise<{
+    connected: boolean;
+    authSource?: string;
+    reason?: string;
+    region?: string;
+    profile?: string;
+  }> {
+    const snap = await this.getConnectionSnapshot(options);
+    return {
+      connected: snap.connected,
+      authSource: snap.authSource,
+      reason: snap.reason,
+      region: snap.region,
+      profile: snap.profile,
     };
   }
 
@@ -181,41 +282,12 @@ export class BedrockAdapter implements AIProviderAdapter {
     reason?: string;
     modelsCount?: number;
   }> {
-    const cacheKey = this.getConfigKey();
-    const now = Date.now();
-
-    if (this.statusCache && this.statusCache.key === cacheKey && now - this.statusCache.timestamp < 30000) {
-      return {
-        status: this.statusCache.status,
-        reason: this.statusCache.reason,
-        modelsCount: this.statusCache.modelsCount,
-      };
-    }
-
-    const conn = await this.getConnectionState();
-    let modelsCount = 0;
-
-    if (conn.connected) {
-      try {
-        const models = await this.listModels();
-        modelsCount = models.length;
-      } catch {}
-    }
-
-    const status: AIProviderStatus = conn.connected ? 'available' : 'unavailable';
-    const result = {
-      status,
-      reason: conn.reason,
-      modelsCount,
+    const snap = await this.getConnectionSnapshot();
+    return {
+      status: snap.status,
+      reason: snap.reason,
+      modelsCount: snap.modelsCount,
     };
-
-    this.statusCache = {
-      ...result,
-      timestamp: now,
-      key: cacheKey,
-    };
-
-    return result;
   }
 
   /**
@@ -246,12 +318,17 @@ export class BedrockAdapter implements AIProviderAdapter {
       for (const fm of fms) {
         if (!fm.modelId) continue;
 
-        // Ensure text input and streaming supported
+        // Skip session-incompatible targets
+        if (this.sessionIncompatibleTargets.has(fm.modelId)) {
+          continue;
+        }
+
+        // Ensure text input and output
         const hasTextInput = fm.inputModalities?.includes('TEXT');
         const hasTextOutput = fm.outputModalities?.includes('TEXT');
-        const supportsStreaming = Boolean(fm.responseStreamingSupported);
+        const streamingSupported = Boolean(fm.responseStreamingSupported);
 
-        if (!hasTextInput || !hasTextOutput || !supportsStreaming) {
+        if (!hasTextInput || !hasTextOutput || !streamingSupported) {
           continue;
         }
 
@@ -260,13 +337,16 @@ export class BedrockAdapter implements AIProviderAdapter {
           continue;
         }
 
+        // Distinguish verified Converse-compatible from unknown
+        const isConverseCompatible = isKnownConverseSupported(fm.modelId);
+
         discoveredModels.push({
           id: fm.modelId,
           providerId: this.id,
           displayName: fm.modelName || fm.modelId,
           executionLocation: 'cloud',
           billingType: 'metered',
-          supportsStreaming: true,
+          supportsStreaming: isConverseCompatible ? true : undefined,
           family: fm.providerName,
           providerDisplayName: fm.providerName,
         });
@@ -275,7 +355,7 @@ export class BedrockAdapter implements AIProviderAdapter {
       console.warn(`[BedrockAdapter] Failed to list foundation models: ${this.normalizeError(err, 'control-plane')}`);
     }
 
-    // 2. Discover Inference Profiles (cross-Region targets)
+    // 2. Discover Inference Profiles
     try {
       let nextToken: string | undefined = undefined;
       do {
@@ -288,7 +368,6 @@ export class BedrockAdapter implements AIProviderAdapter {
 
         const summaries = ipRes.inferenceProfileSummaries || [];
         for (const ip of summaries) {
-          // Usable targets must have an ID or ARN and be ACTIVE
           const targetId = ip.inferenceProfileId || ip.inferenceProfileArn;
           if (!targetId || ip.status !== 'ACTIVE') continue;
 
@@ -296,6 +375,74 @@ export class BedrockAdapter implements AIProviderAdapter {
           const ipType = ip.type;
           if (ipType !== 'SYSTEM_DEFINED' && ipType !== 'APPLICATION') {
             continue;
+          }
+
+          // Skip session-incompatible targets
+          if (this.sessionIncompatibleTargets.has(targetId)) {
+            continue;
+          }
+
+          // Inspect underlying models
+          const underlyingModelIds: string[] = [];
+          const destinationRegions = new Set<string>();
+
+          if (Array.isArray(ip.models)) {
+            for (const m of ip.models) {
+              if (!m.modelArn) continue;
+              // Extract region: arn:aws:bedrock:<region>::foundation-model/...
+              const regMatch = m.modelArn.match(/arn:aws[a-z0-9-]*:bedrock:([a-z0-9-]+):/i);
+              if (regMatch && regMatch[1]) {
+                destinationRegions.add(regMatch[1].toLowerCase());
+              }
+              // Extract model identifier
+              const parts = m.modelArn.split('/');
+              const mId = parts[parts.length - 1];
+              if (mId) {
+                underlyingModelIds.push(mId);
+              }
+            }
+          }
+
+          // Check underlying model compatibility
+          const hasIncompatibleUnderlying = underlyingModelIds.some((mid) => this.sessionIncompatibleTargets.has(mid));
+          if (hasIncompatibleUnderlying) {
+            continue;
+          }
+
+          const hasKnownCompatibleUnderlying = underlyingModelIds.some((mid) => isKnownConverseSupported(mid));
+          let profileSupportsStreaming: boolean | undefined = undefined;
+          if (hasKnownCompatibleUnderlying) {
+            profileSupportsStreaming = true;
+          } else if (underlyingModelIds.length > 0) {
+            profileSupportsStreaming = undefined;
+          }
+
+          // Determine cross-Region routing accurately
+          let isCrossRegion: boolean | undefined = undefined;
+          if (ipType === 'SYSTEM_DEFINED') {
+            const targetLower = targetId.toLowerCase();
+            if (
+              destinationRegions.size > 1 ||
+              targetLower.startsWith('us.') ||
+              targetLower.startsWith('eu.') ||
+              targetLower.startsWith('apac.') ||
+              targetLower.startsWith('global.')
+            ) {
+              isCrossRegion = true;
+            } else if (destinationRegions.size === 1) {
+              isCrossRegion = false;
+            } else {
+              isCrossRegion = undefined;
+            }
+          } else if (ipType === 'APPLICATION') {
+            // APPLICATION profiles: derive strictly from reliable destination region count
+            if (destinationRegions.size > 1) {
+              isCrossRegion = true;
+            } else if (destinationRegions.size === 1) {
+              isCrossRegion = false;
+            } else {
+              isCrossRegion = undefined;
+            }
           }
 
           // Format clean display name with [Inference Profile] tag
@@ -310,8 +457,8 @@ export class BedrockAdapter implements AIProviderAdapter {
               displayName,
               executionLocation: 'cloud',
               billingType: 'metered',
-              supportsStreaming: true,
-              isCrossRegion: true,
+              supportsStreaming: profileSupportsStreaming,
+              isCrossRegion,
               inferenceProfileType: ipType,
               providerDisplayName: 'AWS Bedrock',
             });
@@ -419,6 +566,9 @@ export class BedrockAdapter implements AIProviderAdapter {
         if (chunk.modelStreamErrorException) {
           throw chunk.modelStreamErrorException;
         }
+        if (chunk.serviceUnavailableException) {
+          throw chunk.serviceUnavailableException;
+        }
         if (chunk.throttlingException) {
           throw chunk.throttlingException;
         }
@@ -436,6 +586,10 @@ export class BedrockAdapter implements AIProviderAdapter {
       } else {
         status = 'error';
         errorMessage = this.normalizeError(err, 'runtime');
+        if (errorMessage === 'This Bedrock model does not support the Converse API.') {
+          this.sessionIncompatibleTargets.add(request.modelId);
+          this.modelCache = null; // Invalidate model cache so target is excluded
+        }
         onStream({
           type: 'error',
           error: errorMessage,

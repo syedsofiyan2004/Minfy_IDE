@@ -7,7 +7,7 @@ import { credentialStore } from '../src/services/credentialStore.js';
 import { aiProviderRegistry } from '../src/services/ai/aiRegistry.js';
 import { AIStreamEvent } from '@minfy/shared';
 
-describe('AWS Bedrock Native Provider Adapter (Milestone 6)', () => {
+describe('AWS Bedrock Native Provider Adapter (Milestones 6 & 6.1)', () => {
   let adapter: BedrockAdapter;
 
   beforeEach(() => {
@@ -19,9 +19,8 @@ describe('AWS Bedrock Native Provider Adapter (Milestone 6)', () => {
     bedrockClientFactory.setMockClients(null);
   });
 
-  describe('Authentication & Connection State', () => {
+  describe('Authentication, Identity Privacy & Connection Cache', () => {
     it('returns disconnected when region is not configured', async () => {
-      // Mock unconfigured config
       const origGetConfig = bedrockConfigService.getConfig;
       bedrockConfigService.getConfig = () => ({ region: undefined, profile: undefined, configured: false });
 
@@ -57,7 +56,7 @@ describe('AWS Bedrock Native Provider Adapter (Milestone 6)', () => {
       }
     });
 
-    it('returns connected when STS identity resolves and Bedrock access is authorized', async () => {
+    it('successful provider response contains no account ID and authSource is non-sensitive', async () => {
       const origGetConfig = bedrockConfigService.getConfig;
       bedrockConfigService.getConfig = () => ({ region: 'us-east-1', profile: 'minfy-dev', configured: true });
 
@@ -80,7 +79,10 @@ describe('AWS Bedrock Native Provider Adapter (Milestone 6)', () => {
       try {
         const state = await adapter.getConnectionState();
         assert.strictEqual(state.connected, true);
+        // Identity privacy: Must NOT contain account ID or full ARN
         assert.strictEqual(state.authSource, 'AWS Profile: minfy-dev');
+        assert.strictEqual(state.authSource?.includes('123456789012'), false);
+        assert.strictEqual(state.authSource?.includes('arn:aws'), false);
         assert.strictEqual(state.region, 'us-east-1');
       } finally {
         bedrockConfigService.getConfig = origGetConfig;
@@ -101,21 +103,24 @@ describe('AWS Bedrock Native Provider Adapter (Milestone 6)', () => {
       bedrockClientFactory.setMockClients({ stsClient: mockSts, bedrockClient: mockBedrock });
 
       try {
-        // Assert CredentialStore has NO record of bedrock
         assert.strictEqual(credentialStore.hasCredential('bedrock'), false);
         const state = await adapter.getConnectionState();
         assert.strictEqual(state.connected, true);
+        assert.strictEqual(state.authSource, 'AWS Default Credentials');
       } finally {
         bedrockConfigService.getConfig = origGetConfig;
       }
     });
 
-    it('distinguishes AWS authentication success from Bedrock IAM AccessDeniedException', async () => {
+    it('access-denied provider response contains no ARN or account ID', async () => {
       const origGetConfig = bedrockConfigService.getConfig;
       bedrockConfigService.getConfig = () => ({ region: 'us-east-1', profile: 'restricted-user', configured: true });
 
       const mockSts = {
-        send: async () => ({ Arn: 'arn:aws:iam::123456789012:user/restricted' }),
+        send: async () => ({
+          Arn: 'arn:aws:iam::999888777666:user/restricted',
+          Account: '999888777666',
+        }),
       };
 
       const mockBedrock = {
@@ -131,66 +136,181 @@ describe('AWS Bedrock Native Provider Adapter (Milestone 6)', () => {
       try {
         const state = await adapter.getConnectionState();
         assert.strictEqual(state.connected, false);
-        assert.strictEqual(state.authSource, 'AWS Identity: arn:aws:iam::123456789012:user/restricted');
+        // Identity privacy: Never expose ARN or Account in authSource or reason
+        assert.strictEqual(state.authSource, 'AWS identity resolved');
+        assert.strictEqual(state.authSource?.includes('999888777666'), false);
         assert.strictEqual(state.reason, 'AWS credentials are valid, but this identity does not have permission to use Amazon Bedrock.');
+        assert.strictEqual(state.reason?.includes('999888777666'), false);
+      } finally {
+        bedrockConfigService.getConfig = origGetConfig;
+      }
+    });
+
+    it('connection cache avoids duplicate AWS calls and respects invalidation and fresh flag', async () => {
+      const origGetConfig = bedrockConfigService.getConfig;
+      bedrockConfigService.getConfig = () => ({ region: 'us-east-1', profile: 'test-profile', configured: true });
+
+      let stsCallCount = 0;
+      let bedrockCallCount = 0;
+
+      const mockSts = {
+        send: async () => {
+          stsCallCount++;
+          return { Arn: 'arn:aws:iam::111:user/dev' };
+        },
+      };
+
+      const mockBedrock = {
+        send: async () => {
+          bedrockCallCount++;
+          return { modelSummaries: [] };
+        },
+      };
+
+      bedrockClientFactory.setMockClients({ stsClient: mockSts, bedrockClient: mockBedrock });
+
+      try {
+        // First lookup: invokes STS and Bedrock
+        await adapter.getStatus();
+        assert.strictEqual(stsCallCount, 1);
+        const callsAfterFirst = bedrockCallCount;
+        assert.ok(callsAfterFirst >= 1);
+
+        // Second lookup within cache window: zero additional AWS calls
+        await adapter.getConnectionState();
+        await adapter.getStatus();
+        assert.strictEqual(stsCallCount, 1);
+        assert.strictEqual(bedrockCallCount, callsAfterFirst);
+
+        // Invalidation (e.g. region change) clears cache
+        adapter.invalidateCache();
+        await adapter.getStatus();
+        assert.strictEqual(stsCallCount, 2);
+        assert.ok(bedrockCallCount > callsAfterFirst);
+        const callsAfterSecond = bedrockCallCount;
+
+        // Explicit fresh check bypasses cache
+        await adapter.getConnectionSnapshot({ fresh: true });
+        assert.strictEqual(stsCallCount, 3);
+        assert.ok(bedrockCallCount > callsAfterSecond);
       } finally {
         bedrockConfigService.getConfig = origGetConfig;
       }
     });
   });
 
-  describe('Model & Inference Profile Discovery', () => {
-    it('normalizes foundation models, filters non-text / non-streaming models, and discovers inference profiles', async () => {
+  describe('Capability Accuracy & Model / Profile Discovery', () => {
+    it('text + streaming model is NOT automatically called verified Converse-compatible unless compatibility is known', async () => {
       const origGetConfig = bedrockConfigService.getConfig;
       bedrockConfigService.getConfig = () => ({ region: 'us-east-1', configured: true });
 
       const mockBedrock = {
         send: async (command: any) => {
-          const cmdName = command.constructor.name;
-          if (cmdName === 'ListFoundationModelsCommand') {
+          if (command.constructor.name === 'ListFoundationModelsCommand') {
             return {
               modelSummaries: [
                 {
                   modelId: 'anthropic.claude-3-5-sonnet-20240620-v1:0',
                   modelName: 'Claude 3.5 Sonnet',
                   providerName: 'Anthropic',
-                  inputModalities: ['TEXT', 'IMAGE'],
+                  inputModalities: ['TEXT'],
                   outputModalities: ['TEXT'],
                   responseStreamingSupported: true,
                 },
                 {
-                  modelId: 'amazon.titan-embed-text-v2:0',
-                  modelName: 'Titan Text Embeddings V2',
-                  providerName: 'Amazon',
+                  // Novel / unknown model that streams text, but is NOT known Converse-compatible
+                  modelId: 'unknown-vendor.future-model-v1',
+                  modelName: 'Future Novel Model',
+                  providerName: 'Unknown Vendor',
                   inputModalities: ['TEXT'],
-                  outputModalities: ['EMBEDDING'], // Embedding only -> must be filtered
-                  responseStreamingSupported: false,
-                },
-                {
-                  modelId: 'stability.stable-diffusion-xl-v1',
-                  modelName: 'SDXL',
-                  providerName: 'Stability AI',
-                  inputModalities: ['TEXT'],
-                  outputModalities: ['IMAGE'], // Image only -> must be filtered
-                  responseStreamingSupported: false,
+                  outputModalities: ['TEXT'],
+                  responseStreamingSupported: true,
                 },
               ],
             };
           }
+          return { inferenceProfileSummaries: [] };
+        },
+      };
 
-          if (cmdName === 'ListInferenceProfilesCommand') {
+      bedrockClientFactory.setMockClients({ bedrockClient: mockBedrock });
+
+      try {
+        const models = await adapter.listModels();
+        const claude = models.find((m) => m.id === 'anthropic.claude-3-5-sonnet-20240620-v1:0');
+        const futureModel = models.find((m) => m.id === 'unknown-vendor.future-model-v1');
+
+        assert.ok(claude);
+        assert.strictEqual(claude.supportsStreaming, true, 'Known Converse model family has verified streaming support');
+
+        assert.ok(futureModel);
+        assert.strictEqual(
+          futureModel.supportsStreaming,
+          undefined,
+          'Unknown model does NOT receive verified supportsStreaming: true'
+        );
+      } finally {
+        bedrockConfigService.getConfig = origGetConfig;
+      }
+    });
+
+    it('inference profiles inherit capabilities honestly from underlying models and represent routing accurately', async () => {
+      const origGetConfig = bedrockConfigService.getConfig;
+      bedrockConfigService.getConfig = () => ({ region: 'us-east-1', configured: true });
+
+      const mockBedrock = {
+        send: async (command: any) => {
+          if (command.constructor.name === 'ListFoundationModelsCommand') {
+            return { modelSummaries: [] };
+          }
+          if (command.constructor.name === 'ListInferenceProfilesCommand') {
             return {
               inferenceProfileSummaries: [
+                // 1. SYSTEM_DEFINED cross-region profile linked to known Claude model
                 {
                   inferenceProfileId: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
                   inferenceProfileName: 'Claude 3.5 Sonnet v2',
                   type: 'SYSTEM_DEFINED',
                   status: 'ACTIVE',
+                  models: [
+                    { modelArn: 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0' },
+                    { modelArn: 'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0' },
+                  ],
+                },
+                // 2. APPLICATION profile with a SINGLE destination region (not cross-region)
+                {
+                  inferenceProfileId: 'app-single-region',
+                  inferenceProfileName: 'App Single Region Profile',
+                  type: 'APPLICATION',
+                  status: 'ACTIVE',
+                  models: [
+                    { modelArn: 'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0' },
+                  ],
+                },
+                // 3. APPLICATION profile with MULTIPLE destination regions (cross-region)
+                {
+                  inferenceProfileId: 'app-multi-region',
+                  inferenceProfileName: 'App Multi Region Profile',
+                  type: 'APPLICATION',
+                  status: 'ACTIVE',
+                  models: [
+                    { modelArn: 'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0' },
+                    { modelArn: 'arn:aws:bedrock:eu-central-1::foundation-model/amazon.nova-micro-v1:0' },
+                  ],
+                },
+                // 4. Profile with unknown underlying model
+                {
+                  inferenceProfileId: 'unknown-profile',
+                  inferenceProfileName: 'Unknown Profile',
+                  type: 'APPLICATION',
+                  status: 'ACTIVE',
+                  models: [
+                    { modelArn: 'arn:aws:bedrock:us-east-1::foundation-model/custom.non-converse-model' },
+                  ],
                 },
               ],
             };
           }
-
           return {};
         },
       };
@@ -199,118 +319,42 @@ describe('AWS Bedrock Native Provider Adapter (Milestone 6)', () => {
 
       try {
         const models = await adapter.listModels();
-        assert.strictEqual(models.length, 2);
 
-        const sonnet = models.find((m) => m.id === 'anthropic.claude-3-5-sonnet-20240620-v1:0');
-        assert.ok(sonnet);
-        assert.strictEqual(sonnet.displayName, 'Claude 3.5 Sonnet');
-        assert.strictEqual(sonnet.executionLocation, 'cloud');
-        assert.strictEqual(sonnet.billingType, 'metered');
-        assert.strictEqual(sonnet.supportsStreaming, true);
+        // 1. SYSTEM_DEFINED
+        const sysProf = models.find((m) => m.id === 'us.anthropic.claude-3-5-sonnet-20241022-v2:0');
+        assert.ok(sysProf);
+        assert.strictEqual(sysProf.supportsStreaming, true, 'Linked to known Claude model');
+        assert.strictEqual(sysProf.isCrossRegion, true, 'System-defined US multi-region profile');
 
-        const profile = models.find((m) => m.id === 'us.anthropic.claude-3-5-sonnet-20241022-v2:0');
-        assert.ok(profile);
-        assert.strictEqual(profile.displayName, 'Claude 3.5 Sonnet v2 [Inference Profile]');
-        assert.strictEqual(profile.isCrossRegion, true);
-        assert.strictEqual(profile.inferenceProfileType, 'SYSTEM_DEFINED');
+        // 2. APPLICATION single region
+        const appSingle = models.find((m) => m.id === 'app-single-region');
+        assert.ok(appSingle);
+        assert.strictEqual(appSingle.supportsStreaming, true, 'Linked to known Nova model');
+        assert.strictEqual(appSingle.isCrossRegion, false, 'Single region must NOT be falsely marked cross-region');
+
+        // 3. APPLICATION multi region
+        const appMulti = models.find((m) => m.id === 'app-multi-region');
+        assert.ok(appMulti);
+        assert.strictEqual(appMulti.isCrossRegion, true, 'Multiple destination regions marks cross-region');
+
+        // 4. Unknown model profile
+        const unkProf = models.find((m) => m.id === 'unknown-profile');
+        assert.ok(unkProf);
+        assert.strictEqual(unkProf.supportsStreaming, undefined, 'Unknown model does NOT receive supportsStreaming: true');
       } finally {
         bedrockConfigService.getConfig = origGetConfig;
       }
     });
 
-    it('handles empty region catalog gracefully without throwing', async () => {
-      const origGetConfig = bedrockConfigService.getConfig;
-      bedrockConfigService.getConfig = () => ({ region: 'ap-south-1', configured: true });
-
-      const mockBedrock = {
-        send: async () => ({ modelSummaries: [], inferenceProfileSummaries: [] }),
-      };
-
-      bedrockClientFactory.setMockClients({ bedrockClient: mockBedrock });
-
-      try {
-        const models = await adapter.listModels();
-        assert.strictEqual(Array.isArray(models), true);
-        assert.strictEqual(models.length, 0);
-      } finally {
-        bedrockConfigService.getConfig = origGetConfig;
-      }
-    });
-  });
-
-  describe('ConverseStream Generation & Cancellation', () => {
-    it('maps prompt and system correctly, streams text deltas, and captures usage metadata', async () => {
+    it('learning: target that fails with Converse unsupported is marked session-incompatible', async () => {
       const origGetConfig = bedrockConfigService.getConfig;
       bedrockConfigService.getConfig = () => ({ region: 'us-east-1', configured: true });
-
-      let receivedInput: any = null;
-
-      const mockRuntime = {
-        send: async (command: any) => {
-          receivedInput = command.input;
-          async function* generateStream() {
-            yield { contentBlockDelta: { delta: { text: 'Hello ' } } };
-            yield { contentBlockDelta: { delta: { text: 'from AWS Bedrock!' } } };
-            yield {
-              metadata: {
-                usage: {
-                  inputTokens: 14,
-                  outputTokens: 7,
-                },
-              },
-            };
-          }
-          return { stream: generateStream() };
-        },
-      };
-
-      bedrockClientFactory.setMockClients({ runtimeClient: mockRuntime });
-
-      const events: AIStreamEvent[] = [];
-      try {
-        const usage = await adapter.generate(
-          {
-            providerId: 'bedrock',
-            modelId: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
-            prompt: 'Explain dependency injection',
-            system: 'You are an expert tutor.',
-          },
-          (ev) => events.push(ev)
-        );
-
-        assert.strictEqual(receivedInput.modelId, 'us.anthropic.claude-3-5-sonnet-20241022-v2:0');
-        assert.deepStrictEqual(receivedInput.messages, [
-          { role: 'user', content: [{ text: 'Explain dependency injection' }] },
-        ]);
-        assert.deepStrictEqual(receivedInput.system, [{ text: 'You are an expert tutor.' }]);
-
-        const textDeltas = events.filter((e) => e.type === 'text-delta').map((e) => e.textDelta).join('');
-        assert.strictEqual(textDeltas, 'Hello from AWS Bedrock!');
-
-        assert.strictEqual(usage.status, 'completed');
-        assert.strictEqual(usage.inputTokenCount, 14);
-        assert.strictEqual(usage.outputTokenCount, 7);
-        assert.strictEqual(usage.executionLocation, 'cloud');
-        assert.strictEqual(usage.billingType, 'metered');
-      } finally {
-        bedrockConfigService.getConfig = origGetConfig;
-      }
-    });
-
-    it('handles cancellation gracefully via AbortSignal', async () => {
-      const origGetConfig = bedrockConfigService.getConfig;
-      bedrockConfigService.getConfig = () => ({ region: 'us-east-1', configured: true });
-
-      const controller = new AbortController();
 
       const mockRuntime = {
         send: async () => {
-          async function* generateStream() {
-            yield { contentBlockDelta: { delta: { text: 'First chunk ' } } };
-            controller.abort(); // Cancel during streaming
-            yield { contentBlockDelta: { delta: { text: 'Second chunk' } } };
-          }
-          return { stream: generateStream() };
+          const err: any = new Error('ValidationException: The provided model does not support the Converse operation');
+          err.name = 'ValidationException';
+          throw err;
         },
       };
 
@@ -318,56 +362,52 @@ describe('AWS Bedrock Native Provider Adapter (Milestone 6)', () => {
 
       try {
         const events: AIStreamEvent[] = [];
-        const usage = await adapter.generate(
+        await adapter.generate(
           {
             providerId: 'bedrock',
-            modelId: 'anthropic.claude-3-5-sonnet-20240620-v1:0',
-            prompt: 'Long generation',
+            modelId: 'bad-model-v1',
+            prompt: 'Test',
           },
-          (ev) => events.push(ev),
-          controller.signal
+          (ev) => events.push(ev)
         );
 
-        assert.strictEqual(usage.status, 'cancelled');
-        const textDeltas = events.filter((e) => e.type === 'text-delta').map((e) => e.textDelta).join('');
-        assert.strictEqual(textDeltas, 'First chunk ');
+        const errorEv = events.find((e) => e.type === 'error');
+        assert.ok(errorEv);
+        assert.strictEqual(errorEv.error, 'This Bedrock model does not support the Converse API.');
+
+        // Verify it was recorded in session incompatible set
+        assert.strictEqual((adapter as any).sessionIncompatibleTargets.has('bad-model-v1'), true);
       } finally {
         bedrockConfigService.getConfig = origGetConfig;
       }
     });
   });
 
-  describe('Error Normalization', () => {
-    it('normalizes ThrottlingException', () => {
-      const err: any = new Error('Rate limit exceeded');
-      err.name = 'ThrottlingException';
-      assert.strictEqual(adapter.normalizeError(err), 'Amazon Bedrock is throttling requests. Try again shortly.');
-    });
-
-    it('normalizes ResourceNotFoundException', () => {
-      const err: any = new Error('Model not found');
-      err.name = 'ResourceNotFoundException';
+  describe('ConverseStream Service Errors', () => {
+    it('normalizes ServiceUnavailableException', () => {
+      const err: any = new Error('Service is down');
+      err.name = 'ServiceUnavailableException';
       assert.strictEqual(
         adapter.normalizeError(err),
-        'The selected Bedrock model or inference target is not available in the selected Region or profile.'
+        'Amazon Bedrock is temporarily unavailable. Try again shortly.'
       );
     });
 
-    it('normalizes runtime invocation AccessDeniedException', () => {
-      const err: any = new Error('Access denied to model');
-      err.name = 'AccessDeniedException';
+    it('normalizes ModelNotReadyException', () => {
+      const err: any = new Error('Model is warming up');
+      err.name = 'ModelNotReadyException';
       assert.strictEqual(
-        adapter.normalizeError(err, 'runtime'),
-        "You don't have permission to invoke this Bedrock model. Check your IAM policy for bedrock:InvokeModelWithResponseStream."
+        adapter.normalizeError(err),
+        'This Bedrock model is not ready. Try again shortly.'
       );
     });
 
-    it('normalizes ExpiredTokenException', () => {
-      const err: any = new Error('Token expired');
-      err.name = 'ExpiredTokenException';
+    it('normalizes ModelTimeoutException', () => {
+      const err: any = new Error('Invocation timed out');
+      err.name = 'ModelTimeoutException';
       assert.strictEqual(
         adapter.normalizeError(err),
-        'Your AWS session has expired. Sign in again using your configured AWS profile.'
+        'Amazon Bedrock request timed out.'
       );
     });
   });

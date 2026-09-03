@@ -203,26 +203,18 @@ aiRouter.put('/providers/bedrock/config', async (req: Request<{}, {}, { region?:
 // POST /api/ai/providers/bedrock/test
 aiRouter.post('/providers/bedrock/test', async (_req: Request, res: Response<ApiResponse<BedrockTestResult>>) => {
   try {
-    const connState = await bedrockAdapter.getConnectionState();
-    let modelsCount = 0;
-
-    if (connState.connected) {
-      try {
-        const models = await bedrockAdapter.listModels();
-        modelsCount = models.length;
-      } catch {}
-    }
+    const connState = await bedrockAdapter.getConnectionSnapshot({ fresh: true });
 
     return res.json({
       success: true,
       data: {
         connected: connState.connected,
         identity: connState.authSource,
-        modelsCount,
+        modelsCount: connState.modelsCount,
         reason: connState.reason,
       },
       message: connState.connected
-        ? `Connected to AWS Bedrock in ${connState.region || 'default region'} (${modelsCount} inference targets available)`
+        ? `Connected to AWS Bedrock in ${connState.region || 'default region'} (${connState.modelsCount ?? 0} Bedrock inference targets discovered)`
         : connState.reason || 'Failed to connect to AWS Bedrock',
     });
   } catch (err: any) {

@@ -4,6 +4,27 @@ import os from 'node:os';
 import { BedrockConfig } from '@minfy/shared';
 import { CONFIG } from '../../../config.js';
 
+/**
+ * Validates whether a string is a syntactically safe AWS region identifier.
+ * Allows standard regions (us-east-1, ap-south-1), govcloud (us-gov-west-1),
+ * China (cn-north-1), ISO regions, and future safe identifiers.
+ * Rejects whitespace, slashes, URLs, control characters, and invalid lengths.
+ */
+export function isValidAwsRegion(region: string): boolean {
+  if (!region || typeof region !== 'string') return false;
+  if (region !== region.trim()) return false;
+  const trimmed = region.toLowerCase();
+  // Safe AWS region identifier: 3 to 32 characters, lowercase alphanumeric and hyphens,
+  // starts and ends with alphanumeric character, no consecutive hyphens.
+  if (!/^[a-z0-9]([a-z0-9-]{1,30}[a-z0-9])?$/.test(trimmed)) {
+    return false;
+  }
+  if (trimmed.includes('--') || trimmed.includes('/') || trimmed.includes('\\')) {
+    return false;
+  }
+  return true;
+}
+
 export class BedrockConfigService {
   private configPath: string;
   private onConfigChangeCallbacks: Array<(config: BedrockConfig) => void> = [];
@@ -30,23 +51,42 @@ export class BedrockConfigService {
   }
 
   /**
-   * Try detecting AWS default region from environment or ~/.aws/config
+   * Try detecting AWS default region from environment or profile-specific section in ~/.aws/config
    */
-  public detectDefaultRegion(): string | undefined {
-    if (process.env.AWS_REGION && /^[a-z]{2}-[a-z]+-\d+$/.test(process.env.AWS_REGION.trim())) {
-      return process.env.AWS_REGION.trim();
+  public detectDefaultRegion(profile?: string): string | undefined {
+    // 1. Check standard AWS environment variables
+    if (process.env.AWS_REGION && isValidAwsRegion(process.env.AWS_REGION.trim())) {
+      return process.env.AWS_REGION.trim().toLowerCase();
     }
-    if (process.env.AWS_DEFAULT_REGION && /^[a-z]{2}-[a-z]+-\d+$/.test(process.env.AWS_DEFAULT_REGION.trim())) {
-      return process.env.AWS_DEFAULT_REGION.trim();
+    if (process.env.AWS_DEFAULT_REGION && isValidAwsRegion(process.env.AWS_DEFAULT_REGION.trim())) {
+      return process.env.AWS_DEFAULT_REGION.trim().toLowerCase();
     }
 
+    // 2. Profile-aware ~/.aws/config parsing (strictly isolated by section)
     try {
       const awsConfigPath = path.join(os.homedir(), '.aws', 'config');
       if (fs.existsSync(awsConfigPath)) {
         const content = fs.readFileSync(awsConfigPath, 'utf-8');
-        const match = content.match(/region\s*=\s*([a-z]{2}-[a-z]+-\d+)/i);
-        if (match && match[1]) {
-          return match[1].trim().toLowerCase();
+        const lines = content.split('\n');
+        const targetSection = profile && profile !== 'default' ? `profile ${profile}` : 'default';
+
+        let currentSection: string | null = null;
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            currentSection = trimmed.slice(1, -1).trim();
+            continue;
+          }
+
+          if (currentSection && currentSection.toLowerCase() === targetSection.toLowerCase()) {
+            const match = trimmed.match(/^region\s*=\s*(.+)$/i);
+            if (match && match[1]) {
+              const reg = match[1].trim().toLowerCase();
+              if (isValidAwsRegion(reg)) {
+                return reg;
+              }
+            }
+          }
         }
       }
     } catch {}
@@ -71,11 +111,11 @@ export class BedrockConfigService {
       const raw = fs.readFileSync(this.configPath, 'utf-8');
       const parsed = JSON.parse(raw);
 
-      let region = typeof parsed.region === 'string' ? parsed.region.trim() : undefined;
+      let region = typeof parsed.region === 'string' ? parsed.region.trim().toLowerCase() : undefined;
       let profile = typeof parsed.profile === 'string' && parsed.profile.trim() ? parsed.profile.trim() : undefined;
 
       if (!region) {
-        region = this.detectDefaultRegion();
+        region = this.detectDefaultRegion(profile);
       }
 
       return {
@@ -105,10 +145,8 @@ export class BedrockConfigService {
         throw new Error('AWS Region must be a non-empty string.');
       }
       const trimmedRegion = newConfig.region.trim().toLowerCase();
-      // Validate AWS region format e.g. us-east-1, ap-south-1, eu-central-1
-      const regionRegex = /^[a-z]{2}-[a-z]+-\d+$/;
-      if (!regionRegex.test(trimmedRegion)) {
-        throw new Error(`Invalid AWS Region format "${newConfig.region}". Expected e.g. "us-east-1", "ap-south-1".`);
+      if (!isValidAwsRegion(trimmedRegion)) {
+        throw new Error(`Invalid AWS Region format "${newConfig.region}". Expected a valid identifier e.g. "us-east-1", "us-gov-west-1", "ap-south-1".`);
       }
       cleanRegion = trimmedRegion;
     }

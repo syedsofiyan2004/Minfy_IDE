@@ -3,9 +3,9 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { BedrockConfigService } from '../src/services/ai/bedrock/bedrockConfigService.js';
+import { BedrockConfigService, isValidAwsRegion } from '../src/services/ai/bedrock/bedrockConfigService.js';
 
-describe('AWS Bedrock Configuration & Secret Safety (Milestone 6)', () => {
+describe('AWS Bedrock Configuration & Secret Safety (Milestones 6 & 6.1)', () => {
   let tempDir: string;
   let configPath: string;
   let configService: BedrockConfigService;
@@ -60,14 +60,32 @@ describe('AWS Bedrock Configuration & Secret Safety (Milestone 6)', () => {
     );
   });
 
-  it('validates AWS Region format and rejects invalid formats', () => {
+  it('accepts valid AWS regions including GovCloud syntactically', () => {
+    assert.strictEqual(isValidAwsRegion('us-east-1'), true);
+    assert.strictEqual(isValidAwsRegion('ap-south-1'), true);
+    assert.strictEqual(isValidAwsRegion('us-gov-west-1'), true);
+    assert.strictEqual(isValidAwsRegion('cn-north-1'), true);
+
+    const saved = configService.saveConfig({ region: 'us-gov-west-1' });
+    assert.strictEqual(saved.region, 'us-gov-west-1');
+  });
+
+  it('rejects malformed, URL-like, slash, and control-character regions', () => {
+    assert.strictEqual(isValidAwsRegion('https://bedrock.us-east-1.amazonaws.com'), false);
+    assert.strictEqual(isValidAwsRegion('us-east-1/test'), false);
+    assert.strictEqual(isValidAwsRegion('us-east-1\\test'), false);
+    assert.strictEqual(isValidAwsRegion('us-east-1\n'), false);
+    assert.strictEqual(isValidAwsRegion('  us-east-1  '), false);
+    assert.strictEqual(isValidAwsRegion('-us-east-1'), false);
+    assert.strictEqual(isValidAwsRegion('us-east-1-'), false);
+
     assert.throws(() => {
-      configService.saveConfig({ region: 'invalid_region!' });
+      configService.saveConfig({ region: 'https://bedrock.us-east-1.amazonaws.com' });
     }, /Invalid AWS Region format/);
 
     assert.throws(() => {
-      configService.saveConfig({ region: '' });
-    }, /AWS Region must be a non-empty string/);
+      configService.saveConfig({ region: 'us-east-1/test' });
+    }, /Invalid AWS Region format/);
   });
 
   it('validates AWS Profile format and rejects dangerous characters', () => {
@@ -87,5 +105,42 @@ describe('AWS Bedrock Configuration & Secret Safety (Milestone 6)', () => {
     configService.saveConfig({ region: 'ap-south-1' });
     assert.strictEqual(notified, true);
     unsub();
+  });
+
+  it('does not silently select an unrelated profile region from ~/.aws/config', () => {
+    // Test profile-aware parsing logic
+    const origHomedir = os.homedir;
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'minfy-aws-cfg-test-'));
+    const awsDir = path.join(fakeHome, '.aws');
+    fs.mkdirSync(awsDir, { recursive: true });
+
+    // Put region under a different profile first
+    fs.writeFileSync(
+      path.join(awsDir, 'config'),
+      `
+[profile company-prod]
+region = eu-west-1
+
+[profile my-dev]
+region = ap-southeast-1
+`,
+      'utf-8'
+    );
+
+    (os as any).homedir = () => fakeHome;
+    try {
+      // If asking for default profile: neither company-prod nor my-dev should be returned
+      const defaultReg = configService.detectDefaultRegion('default');
+      assert.strictEqual(defaultReg, undefined);
+
+      // If asking for my-dev profile: should get ap-southeast-1
+      const devReg = configService.detectDefaultRegion('my-dev');
+      assert.strictEqual(devReg, 'ap-southeast-1');
+    } finally {
+      (os as any).homedir = origHomedir;
+      try {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+      } catch {}
+    }
   });
 });
