@@ -14,6 +14,7 @@ import { terminalService } from './services/terminalService.js';
 import { runtimeAuthService } from './services/runtimeAuthService.js';
 import { terminalTicketService } from './services/terminalTicketService.js';
 import { credentialStore } from './services/credentialStore.js';
+import { aiProviderRegistry } from './services/ai/aiRegistry.js';
 import {
   hostValidationMiddleware,
   corsOriginMiddleware,
@@ -122,6 +123,7 @@ export async function startServer(
   maxRetries: number = 6
 ): Promise<http.Server> {
   await credentialStore.loadInitialCredentials(['openrouter']).catch(() => {});
+  await aiProviderRegistry.loadCustomManifests().catch(() => {});
 
   let attempt = 0;
   while (attempt < maxRetries) {

@@ -9,10 +9,13 @@ import {
   AIUsage,
   ConnectProviderRequest,
   ConnectProviderResponse,
+  ProviderManifest,
+  ProviderManifestsResponse,
 } from '@minfy/shared';
 import { aiProviderRegistry } from '../services/ai/aiRegistry.js';
 import { credentialStore } from '../services/credentialStore.js';
-import { getOpenRouterHeaders } from '../services/ai/adapters/openRouterAdapter.js';
+import { providerManifestService } from '../services/ai/providerManifestService.js';
+import { ProviderFactory } from '../services/ai/providerFactory.js';
 
 export const aiRouter = Router();
 
@@ -57,7 +60,7 @@ aiRouter.get('/providers/:id/models', async (req: Request<{ id: string }>, res: 
   }
 });
 
-// POST /api/ai/providers/:id/connect
+// POST /api/ai/providers/:id/connect (Generic credential validation & persistence)
 aiRouter.post('/providers/:id/connect', async (req: Request<{ id: string }, {}, ConnectProviderRequest>, res: Response<ApiResponse<ConnectProviderResponse>>) => {
   const providerId = req.params.id;
   const { apiKey } = req.body;
@@ -79,36 +82,18 @@ aiRouter.post('/providers/:id/connect', async (req: Request<{ id: string }, {}, 
 
   const cleanKey = apiKey.trim();
 
-  // Test the credential before saving
-  if (providerId === 'openrouter') {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${cleanKey}`,
-        ...getOpenRouterHeaders(),
-      };
-
-      const testRes = await fetch('https://openrouter.ai/api/v1/models', {
-        headers,
-        signal: controller.signal,
+  // Generic credential validation via adapter capability before persistence
+  if (adapter.validateCredential) {
+    const check = await adapter.validateCredential(cleanKey);
+    if (!check.valid) {
+      return res.status(401).json({
+        success: false,
+        error: check.reason || `Authentication failed for ${adapter.name}. Check your API key.`,
       });
-      clearTimeout(timeoutId);
-
-      if (!testRes.ok && (testRes.status === 401 || testRes.status === 403)) {
-        return res.status(401).json({
-          success: false,
-          error: "Couldn't connect to OpenRouter. Check the API key and try again.",
-        });
-      }
-    } catch (err: any) {
-      // Network timeout or connectivity issue
-      console.warn('[AI Connect] Verification network warning:', err.message);
     }
   }
 
-  // Persist asynchronously to backend & synchronous hot cache
+  // Persist only after successful validation
   await credentialStore.set(providerId, cleanKey);
 
   const status = await adapter.getStatus();
@@ -136,6 +121,169 @@ aiRouter.delete('/providers/:id/connection', async (req: Request<{ id: string }>
     message: `Disconnected ${providerId} successfully`,
   });
 });
+
+// ==========================================
+// Provider Manifest Management Endpoints (Milestone 5)
+// ==========================================
+
+// GET /api/ai/manifests - List all custom provider manifests
+aiRouter.get('/manifests', (_req: Request, res: Response<ApiResponse<ProviderManifestsResponse>>) => {
+  try {
+    const manifests = providerManifestService.listManifests();
+    return res.json({
+      success: true,
+      data: { manifests },
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to list provider manifests',
+    });
+  }
+});
+
+// POST /api/ai/manifests - Create and register a custom provider manifest
+aiRouter.post('/manifests', (req: Request<{}, {}, any>, res: Response<ApiResponse<ProviderManifest>>) => {
+  const validation = providerManifestService.validateManifest(req.body, true);
+  if (!validation.valid || !validation.manifest) {
+    return res.status(400).json({
+      success: false,
+      error: validation.error || 'Invalid provider manifest.',
+    });
+  }
+
+  const manifest = validation.manifest;
+
+  // Check if provider ID already exists in registry
+  if (aiProviderRegistry.getAdapter(manifest.id)) {
+    return res.status(400).json({
+      success: false,
+      error: `Provider ID "${manifest.id}" already exists.`,
+    });
+  }
+
+  try {
+    // 1. Persist manifest file to ~/.minfy/providers/
+    providerManifestService.saveManifest(manifest);
+
+    // 2. Instantiate and dynamically register adapter
+    const adapter = ProviderFactory.createProviderFromManifest(manifest);
+    aiProviderRegistry.registerAdapter(adapter);
+
+    return res.status(201).json({
+      success: true,
+      data: manifest,
+      message: `Custom provider "${manifest.name}" created successfully.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to create provider manifest.',
+    });
+  }
+});
+
+// PUT /api/ai/manifests/:id - Update an existing custom provider manifest
+aiRouter.put('/manifests/:id', (req: Request<{ id: string }, {}, any>, res: Response<ApiResponse<ProviderManifest>>) => {
+  const providerId = req.params.id.toLowerCase();
+
+  if (aiProviderRegistry.isBuiltIn(providerId)) {
+    return res.status(400).json({
+      success: false,
+      error: `Built-in provider "${providerId}" cannot be modified.`,
+    });
+  }
+
+  const existing = providerManifestService.getManifest(providerId);
+  if (!existing) {
+    return res.status(404).json({
+      success: false,
+      error: `Provider manifest "${providerId}" not found.`,
+    });
+  }
+
+  // Ensure ID in body matches path ID
+  const payload = { ...req.body, id: providerId };
+  const validation = providerManifestService.validateManifest(payload, false);
+  if (!validation.valid || !validation.manifest) {
+    return res.status(400).json({
+      success: false,
+      error: validation.error || 'Invalid provider manifest.',
+    });
+  }
+
+  const updatedManifest = validation.manifest;
+
+  try {
+    // Save updated manifest
+    providerManifestService.saveManifest(updatedManifest);
+
+    // If auth changed from Bearer to None, delete stored credentials
+    if (existing.auth.type === 'bearer' && updatedManifest.auth.type === 'none') {
+      credentialStore.delete(providerId).catch(() => {});
+    }
+
+    // Re-instantiate and update in registry
+    const newAdapter = ProviderFactory.createProviderFromManifest(updatedManifest);
+    aiProviderRegistry.registerAdapter(newAdapter);
+
+    return res.json({
+      success: true,
+      data: updatedManifest,
+      message: `Provider "${updatedManifest.name}" updated successfully.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to update provider manifest.',
+    });
+  }
+});
+
+// DELETE /api/ai/manifests/:id - Delete a custom provider manifest
+aiRouter.delete('/manifests/:id', async (req: Request<{ id: string }>, res: Response<ApiResponse<{ deleted: boolean }>>) => {
+  const providerId = req.params.id.toLowerCase();
+
+  if (aiProviderRegistry.isBuiltIn(providerId)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Built-in providers cannot be removed.',
+    });
+  }
+
+  if (aiProviderRegistry.hasActiveGeneration(providerId)) {
+    return res.status(409).json({
+      success: false,
+      error: `Cannot remove provider "${providerId}" while an active generation is in progress. Stop the generation first.`,
+    });
+  }
+
+  try {
+    // 1. Unregister adapter
+    aiProviderRegistry.unregisterAdapter(providerId);
+
+    // 2. Delete manifest file
+    providerManifestService.deleteManifest(providerId);
+
+    // 3. Remove any stored credentials
+    await credentialStore.delete(providerId);
+
+    return res.json({
+      success: true,
+      data: { deleted: true },
+      message: `Custom provider "${providerId}" deleted successfully.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to delete provider manifest.',
+    });
+  }
+});
+
+// ==========================================
+// Generation and Streaming Endpoints
+// ==========================================
 
 // POST /api/ai/generate (SSE stream)
 aiRouter.post('/generate', async (req: Request<{}, {}, AIGenerateRequest>, res: Response) => {

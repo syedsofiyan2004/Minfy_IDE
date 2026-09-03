@@ -46,6 +46,7 @@ export class OpenRouterAdapter extends OpenAICompatibleAdapter {
       id: 'openrouter',
       name: 'OpenRouter',
       type: 'router',
+      source: 'built-in',
       baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
       requiresAuth: true,
       getApiKey: () => credentialStore.getCredential('openrouter'),

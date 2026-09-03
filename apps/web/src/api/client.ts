@@ -14,6 +14,8 @@ import {
   AIUsage,
   ConnectProviderResponse,
   TerminalTicketResponse,
+  ProviderManifest,
+  ProviderManifestsResponse,
 } from '@minfy/shared';
 
 const API_BASE = '/api';
@@ -164,6 +166,30 @@ export const api = {
 
   disconnectAIProvider: async (providerId: string): Promise<{ connected: boolean }> => {
     return fetchJson<{ connected: boolean }>(`${API_BASE}/ai/providers/${encodeURIComponent(providerId)}/connection`, {
+      method: 'DELETE',
+    });
+  },
+
+  listProviderManifests: async (): Promise<ProviderManifestsResponse> => {
+    return fetchJson<ProviderManifestsResponse>(`${API_BASE}/ai/manifests`);
+  },
+
+  createProviderManifest: async (manifest: any): Promise<ProviderManifest> => {
+    return fetchJson<ProviderManifest>(`${API_BASE}/ai/manifests`, {
+      method: 'POST',
+      body: JSON.stringify(manifest),
+    });
+  },
+
+  updateProviderManifest: async (id: string, manifest: any): Promise<ProviderManifest> => {
+    return fetchJson<ProviderManifest>(`${API_BASE}/ai/manifests/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(manifest),
+    });
+  },
+
+  deleteProviderManifest: async (id: string): Promise<void> => {
+    await fetchJson<{ deleted: boolean }>(`${API_BASE}/ai/manifests/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
   },

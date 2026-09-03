@@ -34,6 +34,8 @@ export class OllamaAdapter implements AIProviderAdapter {
   public readonly id = 'ollama';
   public readonly name = 'Ollama';
   public readonly type = 'local' as const;
+  public readonly source = 'built-in' as const;
+  public readonly protocol = 'ollama';
 
   private endpoint: string;
 

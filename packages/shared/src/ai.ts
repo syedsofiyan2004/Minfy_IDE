@@ -6,6 +6,44 @@ export type AIExecutionLocation = 'local' | 'cloud' | 'hybrid' | 'unknown';
 
 export type AIBillingType = 'local' | 'free' | 'subscription' | 'metered' | 'unknown';
 
+export type ProviderManifestProtocol = 'openai-compatible';
+export type ProviderManifestSource = 'built-in' | 'custom';
+export type ProviderAuthType = 'none' | 'bearer';
+
+export interface ProviderAuth {
+  type: ProviderAuthType;
+  required?: boolean;
+}
+
+export interface ProviderEndpoints {
+  models?: string;
+  chatCompletions?: string;
+}
+
+export interface ProviderDefaults {
+  executionLocation?: AIExecutionLocation;
+  billingType?: AIBillingType;
+}
+
+export interface ProviderManifest {
+  schemaVersion: 1;
+  id: string;
+  name: string;
+  protocol: ProviderManifestProtocol;
+  providerType: AIProviderType;
+  baseUrl: string;
+  auth: ProviderAuth;
+  endpoints?: ProviderEndpoints;
+  defaults?: ProviderDefaults;
+  customHeaders?: Record<string, string>;
+  enabled?: boolean;
+  source?: ProviderManifestSource;
+}
+
+export interface ProviderManifestsResponse {
+  manifests: ProviderManifest[];
+}
+
 export interface AIProvider {
   id: string;
   name: string;
@@ -17,6 +55,8 @@ export interface AIProvider {
   requiresAuth?: boolean;
   connected?: boolean;
   credentialBackend?: string;
+  source?: ProviderManifestSource;
+  protocol?: string;
 }
 
 export interface AIModel {

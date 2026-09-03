@@ -7,6 +7,7 @@ import {
   AIGenerateRequest,
   AIStreamEvent,
   AIUsage,
+  ProviderManifestSource,
 } from '@minfy/shared';
 import { AIProviderAdapter } from '../types.js';
 
@@ -15,8 +16,13 @@ export interface OpenAICompatibleConfig {
   name: string;
   type: AIProviderType;
   baseUrl: string;
+  source?: ProviderManifestSource;
   requiresAuth?: boolean;
   getApiKey?: () => Promise<string | undefined> | string | undefined;
+  endpoints?: {
+    models?: string;
+    chatCompletions?: string;
+  };
   defaultExecutionLocation?: AIExecutionLocation;
   defaultBillingType?: AIBillingType;
   modelClassifier?: (modelId: string, rawModel?: any) => {
@@ -32,6 +38,8 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
   public readonly id: string;
   public readonly name: string;
   public readonly type: AIProviderType;
+  public readonly source: ProviderManifestSource;
+  public readonly protocol = 'openai-compatible';
   public readonly requiresAuth: boolean;
 
   protected config: OpenAICompatibleConfig;
@@ -41,16 +49,35 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     this.id = config.id;
     this.name = config.name;
     this.type = config.type;
+    this.source = config.source || 'custom';
     this.requiresAuth = config.requiresAuth ?? true;
   }
 
-  protected async getHeaders(): Promise<Record<string, string>> {
+  protected getModelsEndpoint(): string {
+    const cleanBase = this.config.baseUrl.replace(/\/+$/, '');
+    const path = this.config.endpoints?.models || '/models';
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    return `${cleanBase}${cleanPath}`;
+  }
+
+  protected getChatEndpoint(): string {
+    const cleanBase = this.config.baseUrl.replace(/\/+$/, '');
+    const path = this.config.endpoints?.chatCompletions || '/chat/completions';
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    return `${cleanBase}${cleanPath}`;
+  }
+
+  protected async getHeaders(overrideKey?: string): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...this.config.customHeaders,
     };
 
-    if (this.config.getApiKey) {
+    if (overrideKey !== undefined) {
+      if (overrideKey.trim()) {
+        headers['Authorization'] = `Bearer ${overrideKey.trim()}`;
+      }
+    } else if (this.config.getApiKey) {
       const key = await this.config.getApiKey();
       if (key) {
         headers['Authorization'] = `Bearer ${key.trim()}`;
@@ -58,6 +85,49 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     }
 
     return headers;
+  }
+
+  public async validateCredential(credential: string): Promise<{ valid: boolean; reason?: string }> {
+    const trimmed = credential.trim();
+    if (!trimmed) {
+      return { valid: false, reason: 'API key cannot be empty.' };
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    try {
+      const headers = await this.getHeaders(trimmed);
+      const endpoint = this.getModelsEndpoint();
+
+      const res = await fetch(endpoint, {
+        headers,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        return { valid: true };
+      }
+
+      if (res.status === 401 || res.status === 403) {
+        return {
+          valid: false,
+          reason: `Authentication failed for ${this.name}. Check your API key.`,
+        };
+      }
+
+      return {
+        valid: false,
+        reason: `${this.name} returned HTTP ${res.status} during credential verification.`,
+      };
+    } catch {
+      clearTimeout(timeoutId);
+      return {
+        valid: false,
+        reason: `${this.name} could not be reached. Credential was not saved.`,
+      };
+    }
   }
 
   public async getStatus(): Promise<{ status: AIProviderStatus; reason?: string; modelsCount?: number }> {
@@ -77,7 +147,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       const timeoutId = setTimeout(() => controller.abort(), 2500);
 
       const headers = await this.getHeaders();
-      const endpoint = `${this.config.baseUrl.replace(/\/+$/, '')}/models`;
+      const endpoint = this.getModelsEndpoint();
 
       const res = await fetch(endpoint, {
         headers,
@@ -144,7 +214,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       const timeoutId = setTimeout(() => controller.abort(), 4000);
 
       const headers = await this.getHeaders();
-      const endpoint = `${this.config.baseUrl.replace(/\/+$/, '')}/models`;
+      const endpoint = this.getModelsEndpoint();
 
       const res = await fetch(endpoint, {
         headers,
@@ -216,7 +286,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
 
     try {
       const headers = await this.getHeaders();
-      const endpoint = `${this.config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+      const endpoint = this.getChatEndpoint();
 
       const res = await fetch(endpoint, {
         method: 'POST',

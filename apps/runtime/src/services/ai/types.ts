@@ -5,12 +5,15 @@ import {
   AIGenerateRequest,
   AIStreamEvent,
   AIUsage,
+  ProviderManifestSource,
 } from '@minfy/shared';
 
 export interface AIProviderAdapter {
   readonly id: string;
   readonly name: string;
   readonly type: AIProviderType;
+  readonly source?: ProviderManifestSource;
+  readonly protocol?: string;
 
   getStatus(): Promise<{ status: AIProviderStatus; reason?: string; modelsCount?: number }>;
 
@@ -21,4 +24,6 @@ export interface AIProviderAdapter {
     onStream: (event: AIStreamEvent) => void,
     abortSignal?: AbortSignal
   ): Promise<AIUsage>;
+
+  validateCredential?(credential: string): Promise<{ valid: boolean; reason?: string }>;
 }

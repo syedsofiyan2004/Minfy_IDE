@@ -20,7 +20,9 @@ import {
   Key,
   LogOut,
   ShieldCheck,
+  Settings2,
 } from 'lucide-react';
+import { ProviderManagerModal } from './ProviderManagerModal.js';
 
 interface Message {
   id: string;
@@ -48,6 +50,7 @@ export const AIPanel: React.FC = () => {
   const [apiKeyInput, setApiKeyInput] = useState<string>('');
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
 
   const activeProvider = providers.find((p) => p.id === selectedProvider);
   const requiresAuth = activeProvider?.requiresAuth ?? false;
@@ -346,10 +349,32 @@ export const AIPanel: React.FC = () => {
             >
               {providers.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name} {p.type === 'local' ? '(Local)' : '(Router)'}
+                  {p.name} {p.source === 'custom' ? '(Custom)' : p.type === 'local' ? '(Local)' : '(Remote)'}
                 </option>
               ))}
             </select>
+
+            <button
+              onClick={() => setIsManagerOpen(true)}
+              title="Manage AI Providers"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '3px 7px',
+                fontSize: '11px',
+                fontWeight: 600,
+                borderRadius: '4px',
+                backgroundColor: 'var(--surface-3)',
+                border: '1px solid var(--border-default)',
+                color: 'var(--text-primary)',
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              <Settings2 size={12} />
+              <span>Manage</span>
+            </button>
           </div>
 
           {/* Connected / Available Pill */}
@@ -525,12 +550,14 @@ export const AIPanel: React.FC = () => {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Key size={18} color="var(--info)" />
               <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>
-                Connect {activeProvider?.name || 'OpenRouter'}
+                Connect {activeProvider?.name || 'Provider'}
               </div>
             </div>
 
             <span style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-              Enter your {activeProvider?.name} API key to access remote models, including OpenRouter Free models.
+              {activeProvider?.id === 'openrouter'
+                ? 'Enter your OpenRouter API key to access remote models, including OpenRouter Free models.'
+                : `Enter your API key or Bearer token for ${activeProvider?.name} to connect.`}
             </span>
 
             <form onSubmit={handleConnectProvider} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -538,7 +565,7 @@ export const AIPanel: React.FC = () => {
                 type="password"
                 value={apiKeyInput}
                 onChange={(e) => setApiKeyInput(e.target.value)}
-                placeholder="sk-or-v1-..."
+                placeholder={activeProvider?.id === 'openrouter' ? 'sk-or-v1-...' : 'Enter API key or Bearer token...'}
                 disabled={isConnecting}
                 style={{
                   width: '100%',
@@ -842,6 +869,13 @@ export const AIPanel: React.FC = () => {
           )}
         </div>
       </div>
+
+      <ProviderManagerModal
+        isOpen={isManagerOpen}
+        onClose={() => setIsManagerOpen(false)}
+        providers={providers}
+        onRefresh={loadProviders}
+      />
     </div>
   );
 };
