@@ -16,6 +16,8 @@ import {
   TerminalTicketResponse,
   ProviderManifest,
   ProviderManifestsResponse,
+  BedrockConfig,
+  BedrockTestResult,
 } from '@minfy/shared';
 
 const API_BASE = '/api';
@@ -191,6 +193,24 @@ export const api = {
   deleteProviderManifest: async (id: string): Promise<void> => {
     await fetchJson<{ deleted: boolean }>(`${API_BASE}/ai/manifests/${encodeURIComponent(id)}`, {
       method: 'DELETE',
+    });
+  },
+
+  // AWS Bedrock Configuration (Milestone 6)
+  getBedrockConfig: async (): Promise<BedrockConfig> => {
+    return fetchJson<BedrockConfig>(`${API_BASE}/ai/providers/bedrock/config`);
+  },
+
+  updateBedrockConfig: async (config: { region?: string; profile?: string }): Promise<BedrockConfig> => {
+    return fetchJson<BedrockConfig>(`${API_BASE}/ai/providers/bedrock/config`, {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    });
+  },
+
+  testBedrockConnection: async (): Promise<BedrockTestResult> => {
+    return fetchJson<BedrockTestResult>(`${API_BASE}/ai/providers/bedrock/test`, {
+      method: 'POST',
     });
   },
 

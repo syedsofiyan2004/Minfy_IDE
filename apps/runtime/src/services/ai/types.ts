@@ -26,4 +26,12 @@ export interface AIProviderAdapter {
   ): Promise<AIUsage>;
 
   validateCredential?(credential: string): Promise<{ valid: boolean; reason?: string }>;
+
+  getConnectionState?(): Promise<{
+    connected: boolean;
+    authSource?: string;
+    reason?: string;
+    region?: string;
+    profile?: string;
+  }>;
 }

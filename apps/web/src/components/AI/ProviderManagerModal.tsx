@@ -16,6 +16,7 @@ import {
   Layers,
   Settings2,
 } from 'lucide-react';
+import { BedrockConfigModal } from './BedrockConfigModal.js';
 
 interface ProviderManagerModalProps {
   isOpen: boolean;
@@ -37,6 +38,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [isBedrockModalOpen, setIsBedrockModalOpen] = useState<boolean>(false);
 
   // Form fields
   const [name, setName] = useState<string>('');
@@ -239,44 +241,63 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                   Built-in Providers
                 </div>
                 <div className="space-y-2">
-                  {builtInProviders.map((prov) => (
-                    <div
-                      key={prov.id}
-                      className="flex items-center justify-between p-3 bg-[#1e1e2e] border border-[#313244] rounded-md"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <div
-                          className={`w-2.5 h-2.5 rounded-full ${
-                            prov.status === 'available'
-                              ? 'bg-[#a6e3a1]'
-                              : prov.connected
-                              ? 'bg-[#89b4fa]'
-                              : 'bg-[#f38ba8]'
-                          }`}
-                        />
-                        <div>
-                          <div className="text-sm font-medium text-[#cdd6f4] flex items-center gap-2">
-                            {prov.name}
-                            <span className="text-[10px] bg-[#313244] text-[#bac2de] px-1.5 py-0.5 rounded font-mono">
-                              built-in
-                            </span>
-                          </div>
-                          <div className="text-xs text-[#6c7086]">
-                            {prov.requiresAuth
-                              ? prov.connected
-                                ? 'Connected via CredentialStore'
-                                : 'API key required'
-                              : prov.status === 'available'
-                              ? 'Local service detected'
-                              : 'Offline / unreachable'}
+                  {builtInProviders.map((prov) => {
+                    const isBedrock = prov.id === 'bedrock';
+                    const description = isBedrock
+                      ? prov.connected
+                        ? `Connected via AWS SDK (${prov.region || 'Region configured'})`
+                        : prov.statusReason || 'AWS Region required'
+                      : prov.requiresAuth
+                      ? prov.connected
+                        ? 'Connected via CredentialStore'
+                        : 'API key required'
+                      : prov.status === 'available'
+                      ? 'Local service detected'
+                      : 'Offline / unreachable';
+
+                    return (
+                      <div
+                        key={prov.id}
+                        className="flex items-center justify-between p-3 bg-[#1e1e2e] border border-[#313244] rounded-md"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div
+                            className={`w-2.5 h-2.5 rounded-full ${
+                              prov.status === 'available'
+                                ? 'bg-[#a6e3a1]'
+                                : prov.connected
+                                ? 'bg-[#89b4fa]'
+                                : 'bg-[#f38ba8]'
+                            }`}
+                          />
+                          <div>
+                            <div className="text-sm font-medium text-[#cdd6f4] flex items-center gap-2">
+                              {prov.name}
+                              <span className="text-[10px] bg-[#313244] text-[#bac2de] px-1.5 py-0.5 rounded font-mono">
+                                built-in
+                              </span>
+                            </div>
+                            <div className="text-xs text-[#6c7086]">
+                              {description}
+                            </div>
                           </div>
                         </div>
+                        <div className="flex items-center gap-3">
+                          <div className="text-xs text-[#a6adc8]">
+                            {prov.modelsCount ? `${prov.modelsCount} models` : '0 models'}
+                          </div>
+                          {isBedrock && (
+                            <button
+                              onClick={() => setIsBedrockModalOpen(true)}
+                              className="px-2 py-0.5 text-[11px] font-medium text-[#89b4fa] bg-[#89b4fa]/10 hover:bg-[#89b4fa]/20 border border-[#89b4fa]/30 rounded transition-colors"
+                            >
+                              Configure
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <div className="text-xs text-[#a6adc8]">
-                        {prov.modelsCount ? `${prov.modelsCount} models` : '0 models'}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -625,6 +646,14 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
           )}
         </div>
       </div>
+
+      <BedrockConfigModal
+        isOpen={isBedrockModalOpen}
+        onClose={() => setIsBedrockModalOpen(false)}
+        onSaveSuccess={async () => {
+          await onRefresh();
+        }}
+      />
     </div>
   );
 };

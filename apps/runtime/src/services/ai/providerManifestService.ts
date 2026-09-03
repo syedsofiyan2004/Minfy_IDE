@@ -9,7 +9,7 @@ import {
 } from '@minfy/shared';
 import { CONFIG } from '../../config.js';
 
-export const RESERVED_PROVIDER_IDS = new Set(['ollama', 'openrouter']);
+export const RESERVED_PROVIDER_IDS = new Set(['ollama', 'openrouter', 'bedrock']);
 const FORBIDDEN_SECRET_KEYS = ['apikey', 'api_key', 'token', 'secret', 'password'];
 
 // Strict forbidden header keys (case-insensitive)

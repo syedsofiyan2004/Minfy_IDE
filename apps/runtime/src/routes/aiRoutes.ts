@@ -11,11 +11,15 @@ import {
   ConnectProviderResponse,
   ProviderManifest,
   ProviderManifestsResponse,
+  BedrockConfig,
+  BedrockTestResult,
 } from '@minfy/shared';
 import { aiProviderRegistry } from '../services/ai/aiRegistry.js';
 import { credentialStore } from '../services/credentialStore.js';
 import { providerManifestService, assertValidProviderId } from '../services/ai/providerManifestService.js';
 import { ProviderFactory } from '../services/ai/providerFactory.js';
+import { bedrockConfigService } from '../services/ai/bedrock/bedrockConfigService.js';
+import { bedrockAdapter } from '../services/ai/bedrock/bedrockAdapter.js';
 
 export const aiRouter = Router();
 
@@ -79,6 +83,13 @@ aiRouter.post('/providers/:id/connect', async (req: Request<{ id: string }, {}, 
     return res.status(400).json({
       success: false,
       error: `Invalid provider ID: ${err.message}`,
+    });
+  }
+
+  if (providerId === 'bedrock') {
+    return res.status(400).json({
+      success: false,
+      error: 'AWS Bedrock uses standard AWS SDK credentials and named profiles. Configure Bedrock settings instead of entering an API key.',
     });
   }
 
@@ -148,6 +159,78 @@ aiRouter.delete('/providers/:id/connection', async (req: Request<{ id: string }>
     data: { connected: false },
     message: `Disconnected ${providerId} successfully`,
   });
+});
+
+// ==========================================
+// AWS Bedrock Configuration Endpoints (Milestone 6)
+// ==========================================
+
+// GET /api/ai/providers/bedrock/config
+aiRouter.get('/providers/bedrock/config', (_req: Request, res: Response<ApiResponse<BedrockConfig>>) => {
+  try {
+    const config = bedrockConfigService.getConfig();
+    return res.json({
+      success: true,
+      data: config,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to read Bedrock config',
+    });
+  }
+});
+
+// PUT /api/ai/providers/bedrock/config
+aiRouter.put('/providers/bedrock/config', async (req: Request<{}, {}, { region?: string; profile?: string }>, res: Response<ApiResponse<BedrockConfig>>) => {
+  try {
+    const saved = bedrockConfigService.saveConfig(req.body);
+    bedrockAdapter.invalidateCache();
+
+    return res.json({
+      success: true,
+      data: saved,
+      message: 'AWS Bedrock configuration updated successfully.',
+    });
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      error: err.message || 'Invalid Bedrock configuration',
+    });
+  }
+});
+
+// POST /api/ai/providers/bedrock/test
+aiRouter.post('/providers/bedrock/test', async (_req: Request, res: Response<ApiResponse<BedrockTestResult>>) => {
+  try {
+    const connState = await bedrockAdapter.getConnectionState();
+    let modelsCount = 0;
+
+    if (connState.connected) {
+      try {
+        const models = await bedrockAdapter.listModels();
+        modelsCount = models.length;
+      } catch {}
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        connected: connState.connected,
+        identity: connState.authSource,
+        modelsCount,
+        reason: connState.reason,
+      },
+      message: connState.connected
+        ? `Connected to AWS Bedrock in ${connState.region || 'default region'} (${modelsCount} inference targets available)`
+        : connState.reason || 'Failed to connect to AWS Bedrock',
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to test Bedrock connection',
+    });
+  }
 });
 
 // ==========================================
@@ -419,9 +502,11 @@ aiRouter.post('/generate', async (req: Request<{}, {}, AIGenerateRequest>, res: 
     }
   };
 
-  // If client disconnects, abort generation
-  req.on('close', () => {
-    aiProviderRegistry.cancel(generationId);
+  // If client disconnects before completion, abort generation
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      aiProviderRegistry.cancel(generationId);
+    }
   });
 
   try {

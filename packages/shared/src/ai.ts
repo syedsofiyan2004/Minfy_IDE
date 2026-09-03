@@ -44,6 +44,19 @@ export interface ProviderManifestsResponse {
   manifests: ProviderManifest[];
 }
 
+export interface BedrockConfig {
+  region?: string;
+  profile?: string;
+  configured?: boolean;
+}
+
+export interface BedrockTestResult {
+  connected: boolean;
+  identity?: string;
+  modelsCount?: number;
+  reason?: string;
+}
+
 export interface AIProvider {
   id: string;
   name: string;
@@ -55,6 +68,9 @@ export interface AIProvider {
   requiresAuth?: boolean;
   connected?: boolean;
   credentialBackend?: string;
+  authSource?: string;
+  region?: string;
+  profile?: string;
   source?: ProviderManifestSource;
   protocol?: string;
 }
@@ -72,6 +88,9 @@ export interface AIModel {
   supportsTools?: boolean;
   family?: string;
   parameterSize?: string;
+  isCrossRegion?: boolean;
+  inferenceProfileType?: 'SYSTEM_DEFINED' | 'APPLICATION';
+  providerDisplayName?: string;
 }
 
 export interface AIGenerateRequest {

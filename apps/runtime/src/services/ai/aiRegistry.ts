@@ -9,6 +9,7 @@ import {
 import { AIProviderAdapter } from './types.js';
 import { OllamaAdapter } from './adapters/ollamaAdapter.js';
 import { OpenRouterAdapter } from './adapters/openRouterAdapter.js';
+import { bedrockAdapter } from './bedrock/bedrockAdapter.js';
 import { ProviderFactory } from './providerFactory.js';
 import { providerManifestService, RESERVED_PROVIDER_IDS } from './providerManifestService.js';
 import { credentialStore } from '../credentialStore.js';
@@ -29,6 +30,8 @@ export class AIProviderRegistry {
     this.registerAdapter(new OllamaAdapter());
     // Register Milestone 4 remote OpenAI-compatible router
     this.registerAdapter(new OpenRouterAdapter());
+    // Register Milestone 6 enterprise AWS Bedrock adapter
+    this.registerAdapter(bedrockAdapter);
   }
 
   public isBuiltIn(id: string): boolean {
@@ -104,7 +107,19 @@ export class AIProviderRegistry {
         const { status, reason, modelsCount } = await adapter.getStatus();
         const requiresAuth = (adapter as any).requiresAuth ?? false;
         let connected = status === 'available';
-        if (requiresAuth) {
+        let authSource: string | undefined = undefined;
+        let region: string | undefined = undefined;
+        let profile: string | undefined = undefined;
+        let finalReason = reason;
+
+        if (adapter.getConnectionState) {
+          const conn = await adapter.getConnectionState();
+          connected = conn.connected;
+          authSource = conn.authSource;
+          region = conn.region;
+          profile = conn.profile;
+          if (conn.reason) finalReason = conn.reason;
+        } else if (requiresAuth) {
           if (credentialStore.hasCredential(adapter.id)) {
             connected = true;
           } else {
@@ -118,10 +133,13 @@ export class AIProviderRegistry {
           name: adapter.name,
           type: adapter.type,
           status,
-          statusReason: reason,
+          statusReason: finalReason,
           modelsCount,
           requiresAuth,
           connected,
+          authSource,
+          region,
+          profile,
           source,
           protocol,
         });

@@ -23,6 +23,7 @@ import {
   Settings2,
 } from 'lucide-react';
 import { ProviderManagerModal } from './ProviderManagerModal.js';
+import { BedrockConfigModal } from './BedrockConfigModal.js';
 
 interface Message {
   id: string;
@@ -51,11 +52,19 @@ export const AIPanel: React.FC = () => {
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
+  const [isBedrockModalOpen, setIsBedrockModalOpen] = useState<boolean>(false);
 
   const activeProvider = providers.find((p) => p.id === selectedProvider);
+  const isBedrock = activeProvider?.id === 'bedrock';
   const requiresAuth = activeProvider?.requiresAuth ?? false;
-  const isConnected = requiresAuth ? (activeProvider?.connected ?? false) : true;
-  const isAvailable = activeProvider?.status === 'available' || isConnected;
+  const isConnected = isBedrock
+    ? (activeProvider?.connected ?? false)
+    : requiresAuth
+    ? (activeProvider?.connected ?? false)
+    : true;
+  const isAvailable = isBedrock
+    ? (activeProvider?.connected ?? false) && activeProvider?.status === 'available'
+    : (activeProvider?.status === 'available' || isConnected);
 
   const currentModel = models.find((m) => m.id === selectedModel);
   const isLocalExecution = currentModel ? currentModel.executionLocation === 'local' : selectedProvider === 'ollama';
@@ -379,11 +388,31 @@ export const AIPanel: React.FC = () => {
 
           {/* Connected / Available Pill */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
-            {requiresAuth ? (
+            {isBedrock ? (
+              <button
+                onClick={() => setIsBedrockModalOpen(true)}
+                title="Configure Bedrock Region & Profile"
+                style={{
+                  padding: '2px 6px',
+                  borderRadius: '4px',
+                  backgroundColor: isConnected ? 'rgba(255, 153, 0, 0.15)' : 'rgba(248, 81, 73, 0.1)',
+                  border: '1px solid ' + (isConnected ? 'rgba(255, 153, 0, 0.3)' : 'var(--border-subtle)'),
+                  color: isConnected ? '#ff9900' : 'var(--text-disabled)',
+                  fontSize: '10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  cursor: 'pointer',
+                }}
+              >
+                <Cloud size={10} />
+                <span>{isConnected ? activeProvider?.region || 'AWS' : 'Configure AWS'}</span>
+              </button>
+            ) : requiresAuth ? (
               isConnected ? (
                 <button
                   onClick={handleDisconnectProvider}
-                  title="Disconnect OpenRouter API Key"
+                  title="Disconnect Provider API Key"
                   style={{
                     padding: '2px 6px',
                     borderRadius: '4px',
@@ -452,18 +481,22 @@ export const AIPanel: React.FC = () => {
                   borderRadius: '6px',
                   backgroundColor: isFreeModel
                     ? 'rgba(63, 185, 80, 0.15)'
+                    : isBedrock
+                    ? 'rgba(255, 153, 0, 0.15)'
                     : isLocalExecution
                     ? 'var(--surface-3)'
                     : 'rgba(88, 166, 255, 0.15)',
                   color: isFreeModel
                     ? 'var(--success)'
+                    : isBedrock
+                    ? '#ff9900'
                     : isLocalExecution
                     ? 'var(--minfy-yellow-accent)'
                     : 'var(--info)',
                   fontWeight: 600,
                 }}
               >
-                {isFreeModel ? 'Free • Remote' : isLocalExecution ? 'Local • ₹0 Cost' : 'Cloud Router'}
+                {isFreeModel ? 'Free • Remote' : isBedrock ? 'Metered • AWS' : isLocalExecution ? 'Local • ₹0 Cost' : 'Cloud Router'}
               </span>
             </div>
 
@@ -502,7 +535,12 @@ export const AIPanel: React.FC = () => {
                 gap: '4px',
               }}
             >
-              {isFreeModel ? (
+              {isBedrock ? (
+                <>
+                  <Cloud size={10} color="#ff9900" />
+                  <span>AWS Bedrock • Remote inference • AWS-billed usage</span>
+                </>
+              ) : isFreeModel ? (
                 <>
                   <Sparkles size={10} color="var(--success)" />
                   <span>OpenRouter Free • Remote inference • Free token pricing</span>
@@ -534,7 +572,71 @@ export const AIPanel: React.FC = () => {
           gap: '12px',
         }}
       >
-        {requiresAuth && !isConnected ? (
+        {isBedrock && !isConnected ? (
+          /* Bedrock Setup Card */
+          <div
+            style={{
+              padding: '16px 12px',
+              backgroundColor: 'var(--surface-1)',
+              borderRadius: '6px',
+              border: '1px solid var(--border-subtle)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Cloud size={18} color="#ff9900" />
+              <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>
+                Configure AWS Bedrock
+              </div>
+            </div>
+
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+              Minfy connects to AWS Bedrock via your local AWS SDK credential chain (SSO, IAM Identity Center, environment, or named profiles). No AWS secrets are stored.
+            </span>
+
+            {activeProvider?.statusReason && (
+              <div
+                style={{
+                  padding: '8px 10px',
+                  backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                  borderRadius: '4px',
+                  border: '1px solid rgba(248, 81, 73, 0.2)',
+                  color: 'var(--danger)',
+                  fontSize: '11px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                <AlertCircle size={14} style={{ flexShrink: 0 }} />
+                <span>{activeProvider.statusReason}</span>
+              </div>
+            )}
+
+            <button
+              onClick={() => setIsBedrockModalOpen(true)}
+              style={{
+                padding: '8px 12px',
+                backgroundColor: 'rgba(255, 153, 0, 0.15)',
+                border: '1px solid rgba(255, 153, 0, 0.4)',
+                borderRadius: '4px',
+                color: '#ff9900',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px',
+              }}
+            >
+              <Settings2 size={14} />
+              <span>Configure AWS Region & Profile</span>
+            </button>
+          </div>
+        ) : requiresAuth && !isConnected ? (
           /* Connect Provider Card */
           <div
             style={{
@@ -875,6 +977,14 @@ export const AIPanel: React.FC = () => {
         onClose={() => setIsManagerOpen(false)}
         providers={providers}
         onRefresh={loadProviders}
+      />
+
+      <BedrockConfigModal
+        isOpen={isBedrockModalOpen}
+        onClose={() => setIsBedrockModalOpen(false)}
+        onSaveSuccess={async () => {
+          await loadProviders('bedrock');
+        }}
       />
     </div>
   );
