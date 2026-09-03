@@ -65,11 +65,12 @@ export class AIProviderRegistry {
   public async loadCustomManifests(): Promise<void> {
     try {
       const manifests = providerManifestService.listManifests();
-      const customIds = manifests.map((m) => m.id);
+      const enabledManifests = manifests.filter((m) => m.enabled !== false);
+      const customIds = enabledManifests.map((m) => m.id);
       if (customIds.length > 0) {
         await credentialStore.loadInitialCredentials(customIds).catch(() => {});
       }
-      for (const manifest of manifests) {
+      for (const manifest of enabledManifests) {
         if (this.isBuiltIn(manifest.id)) {
           console.warn(`[AIProviderRegistry] Skipping custom manifest for reserved ID "${manifest.id}"`);
           continue;

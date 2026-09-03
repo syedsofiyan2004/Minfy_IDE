@@ -44,6 +44,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
   const [idManuallyEdited, setIdManuallyEdited] = useState<boolean>(false);
   const [baseUrl, setBaseUrl] = useState<string>('');
   const [authType, setAuthType] = useState<'none' | 'bearer'>('none');
+  const [enabled, setEnabled] = useState<boolean>(true);
   const [executionLocation, setExecutionLocation] = useState<AIExecutionLocation>('unknown');
   const [billingType, setBillingType] = useState<AIBillingType>('unknown');
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
@@ -90,6 +91,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
     setIdManuallyEdited(false);
     setBaseUrl('');
     setAuthType('none');
+    setEnabled(true);
     setExecutionLocation('unknown');
     setBillingType('unknown');
     setShowAdvanced(false);
@@ -103,11 +105,30 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
     setId(m.id);
     setBaseUrl(m.baseUrl);
     setAuthType(m.auth.type);
+    setEnabled(m.enabled !== false);
     setExecutionLocation(m.defaults?.executionLocation || 'unknown');
     setBillingType(m.defaults?.billingType || 'unknown');
     setShowAdvanced(Boolean(m.defaults && (m.defaults.executionLocation !== 'unknown' || m.defaults.billingType !== 'unknown')));
     setFormError(null);
     setView('edit');
+  };
+
+  const handleToggleEnabled = async (m: ProviderManifest) => {
+    const newEnabled = m.enabled === false;
+    try {
+      setIsSubmitting(true);
+      setFormError(null);
+      await api.updateProviderManifest(m.id, {
+        ...m,
+        enabled: newEnabled,
+      });
+      await loadManifests();
+      await onRefresh();
+    } catch (err: any) {
+      setFormError(err.message || 'Failed to toggle provider state.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleSaveProvider = async (e: React.FormEvent) => {
@@ -146,7 +167,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
         executionLocation,
         billingType,
       },
-      enabled: true,
+      enabled,
     };
 
     try {
@@ -158,7 +179,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
       }
 
       await loadManifests();
-      await onRefresh(cleanId);
+      await onRefresh(enabled ? cleanId : undefined);
       setView('list');
     } catch (err: any) {
       setFormError(err.message || 'Failed to save provider.');
@@ -294,6 +315,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                 ) : (
                   <div className="space-y-2">
                     {manifests.map((m) => {
+                      const isDisabled = m.enabled === false;
                       const runtimeProv = customProviders.find((p) => p.id === m.id);
                       const isAvail = runtimeProv?.status === 'available';
                       const isConn = runtimeProv?.connected;
@@ -301,28 +323,57 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                       return (
                         <div
                           key={m.id}
-                          className="flex items-center justify-between p-3 bg-[#1e1e2e] border border-[#313244] rounded-md"
+                          className={`flex items-center justify-between p-3 border rounded-md transition-colors ${
+                            isDisabled
+                              ? 'bg-[#181825] border-[#313244]/60 opacity-75'
+                              : 'bg-[#1e1e2e] border-[#313244]'
+                          }`}
                         >
                           <div className="flex items-center gap-2.5">
                             <div
                               className={`w-2.5 h-2.5 rounded-full ${
-                                isAvail ? 'bg-[#a6e3a1]' : isConn ? 'bg-[#89b4fa]' : 'bg-[#6c7086]'
+                                isDisabled
+                                  ? 'bg-[#6c7086]'
+                                  : isAvail
+                                  ? 'bg-[#a6e3a1]'
+                                  : isConn
+                                  ? 'bg-[#89b4fa]'
+                                  : 'bg-[#f38ba8]'
                               }`}
                             />
                             <div>
                               <div className="text-sm font-medium text-[#cdd6f4] flex items-center gap-2">
                                 {m.name}
-                                <span className="text-[10px] bg-[#313244] text-[#89b4fa] px-1.5 py-0.5 rounded font-mono">
-                                  {m.auth.type === 'bearer' ? 'Bearer' : 'None'}
-                                </span>
+                                {isDisabled ? (
+                                  <span className="text-[10px] bg-[#313244] text-[#6c7086] px-1.5 py-0.5 rounded font-mono">
+                                    Disabled
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] bg-[#313244] text-[#89b4fa] px-1.5 py-0.5 rounded font-mono">
+                                    {m.auth.type === 'bearer' ? 'Bearer' : 'None'}
+                                  </span>
+                                )}
                               </div>
-                              <div className="text-xs text-[#6c7086] font-mono truncate max-w-[240px]">
+                              <div className="text-xs text-[#6c7086] font-mono truncate max-w-[220px]">
                                 {m.baseUrl}
                               </div>
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleToggleEnabled(m)}
+                              title={isDisabled ? 'Enable Provider' : 'Disable Provider'}
+                              disabled={isSubmitting}
+                              className={`px-2 py-0.5 text-[11px] font-medium rounded transition-colors ${
+                                isDisabled
+                                  ? 'text-[#a6e3a1] bg-[#a6e3a1]/10 hover:bg-[#a6e3a1]/20 border border-[#a6e3a1]/30'
+                                  : 'text-[#bac2de] bg-[#313244] hover:bg-[#45475a]'
+                              }`}
+                            >
+                              {isDisabled ? 'Enable' : 'Disable'}
+                            </button>
+
                             <button
                               onClick={() => handleOpenEdit(m)}
                               title="Edit Provider"
@@ -330,6 +381,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                             >
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
+
                             <button
                               onClick={() => setDeletingId(m.id)}
                               title="Remove Provider"
@@ -415,7 +467,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                   className="w-full bg-[#1e1e2e] border border-[#313244] focus:border-[#89b4fa] disabled:opacity-60 rounded px-3 py-1.5 text-xs font-mono text-[#cdd6f4] placeholder-[#6c7086] outline-none"
                 />
                 <p className="text-[10px] text-[#6c7086] mt-0.5">
-                  Lowercase alphanumeric with dots or hyphens. Used in CredentialStore and configs.
+                  Lowercase alphanumeric with dots, underscores, or hyphens.
                 </p>
               </div>
 
@@ -432,7 +484,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                   className="w-full bg-[#1e1e2e] border border-[#313244] focus:border-[#89b4fa] rounded px-3 py-1.5 text-xs font-mono text-[#cdd6f4] placeholder-[#6c7086] outline-none"
                 />
                 <p className="text-[10px] text-[#6c7086] mt-0.5">
-                  Must be http: or https:. Endpoints (/models, /chat/completions) are relative to this URL.
+                  Must be http: or https:. Relative endpoints (/models, /chat/completions) cannot escape this boundary.
                 </p>
               </div>
 
@@ -483,8 +535,24 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                 </div>
                 <p className="text-[10px] text-[#6c7086] mt-1">
                   {authType === 'bearer'
-                    ? 'API key will be requested and secured via Minfy CredentialStore. Never stored in manifest.'
-                    : 'No credentials needed. Minfy communicates directly with the endpoint.'}
+                    ? 'API key will be secured in Minfy CredentialStore. Never stored inside manifest file.'
+                    : 'No credentials required. Connects directly to the endpoint.'}
+                </p>
+              </div>
+
+              {/* Enabled checkbox */}
+              <div className="pt-2">
+                <label className="flex items-center gap-2 text-xs text-[#cdd6f4] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => setEnabled(e.target.checked)}
+                    className="rounded border-[#313244] bg-[#1e1e2e] text-[#89b4fa]"
+                  />
+                  <span>Enable this provider for active AI usage</span>
+                </label>
+                <p className="text-[10px] text-[#6c7086] ml-5">
+                  Disabled providers remain saved on disk but are inactive and hidden from the editor picker.
                 </p>
               </div>
 

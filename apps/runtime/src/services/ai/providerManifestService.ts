@@ -11,18 +11,51 @@ import { CONFIG } from '../../config.js';
 
 export const RESERVED_PROVIDER_IDS = new Set(['ollama', 'openrouter']);
 const FORBIDDEN_SECRET_KEYS = ['apikey', 'api_key', 'token', 'secret', 'password'];
-const FORBIDDEN_HEADER_KEYS = [
+
+// Strict forbidden header keys (case-insensitive)
+export const FORBIDDEN_HEADER_KEYS = new Set([
   'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'api-key',
+  'x-auth-token',
+  'x-access-token',
   'content-length',
   'host',
-  'cookie',
-  'proxy-authorization',
-];
+]);
+
+const VALID_HEADER_TOKEN_REGEX = /^[!#$%&'*+\-.^_`|~0-9a-zA-Z]+$/;
 
 export interface ManifestValidationResult {
   valid: boolean;
   error?: string;
   manifest?: ProviderManifest;
+}
+
+/**
+ * Centralized Provider ID validation helper.
+ * Enforces /^[a-z0-9][a-z0-9._-]*$/ and path traversal resistance.
+ */
+export function assertValidProviderId(id: string): string {
+  if (!id || typeof id !== 'string' || !id.trim()) {
+    throw new Error('Provider ID is required.');
+  }
+
+  const cleanId = id.trim();
+  const idRegex = /^[a-z0-9][a-z0-9._-]*$/;
+  if (!idRegex.test(cleanId)) {
+    throw new Error(
+      `Invalid provider ID "${cleanId}". IDs must start with a lowercase alphanumeric character and contain only lowercase letters, digits, dots, underscores, or hyphens.`
+    );
+  }
+
+  if (cleanId.includes('/') || cleanId.includes('\\') || cleanId.includes('..')) {
+    throw new Error('Provider ID cannot contain path traversal or slash characters.');
+  }
+
+  return cleanId;
 }
 
 export class ProviderManifestService {
@@ -43,7 +76,26 @@ export class ProviderManifestService {
   }
 
   /**
-   * Validate a manifest object according to Milestone 5 schema & security rules.
+   * Resolves and verifies that a target manifest path remains strictly inside providersDir.
+   */
+  public resolveManifestPath(id: string): string {
+    const cleanId = assertValidProviderId(id);
+    const providersRoot = path.resolve(this.providersDir);
+    const targetFile = path.resolve(providersRoot, `${cleanId}.json`);
+
+    const isWindows = os.platform() === 'win32';
+    const normRoot = isWindows ? providersRoot.toLowerCase() : providersRoot;
+    const normTarget = isWindows ? targetFile.toLowerCase() : targetFile;
+
+    if (!normTarget.startsWith(normRoot + path.sep)) {
+      throw new Error(`Path traversal detected: provider ID "${cleanId}" escapes providers directory.`);
+    }
+
+    return targetFile;
+  }
+
+  /**
+   * Validate a manifest object according to Milestone 5 & 5.1 schema and security rules.
    */
   public validateManifest(raw: any, isBuiltInIdCheck = true): ManifestValidationResult {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -58,7 +110,7 @@ export class ProviderManifestService {
       };
     }
 
-    // 2. Reject obvious secret fields
+    // 2. Reject obvious secret fields in root object
     for (const key of Object.keys(raw)) {
       const lowerKey = key.toLowerCase();
       if (FORBIDDEN_SECRET_KEYS.includes(lowerKey)) {
@@ -69,20 +121,12 @@ export class ProviderManifestService {
       }
     }
 
-    // 3. Provider ID validation
-    if (!raw.id || typeof raw.id !== 'string' || !raw.id.trim()) {
-      return { valid: false, error: 'Provider ID is required.' };
-    }
-    const cleanId = raw.id.trim();
-    const idRegex = /^[a-z0-9][a-z0-9._-]*$/;
-    if (!idRegex.test(cleanId)) {
-      return {
-        valid: false,
-        error: `Invalid provider ID "${cleanId}". IDs must start with a lowercase alphanumeric character and contain only lowercase letters, digits, dots, underscores, or hyphens.`,
-      };
-    }
-    if (cleanId.includes('/') || cleanId.includes('\\') || cleanId.includes('..')) {
-      return { valid: false, error: 'Provider ID cannot contain path traversal or slash characters.' };
+    // 3. Provider ID validation (Centralized)
+    let cleanId: string;
+    try {
+      cleanId = assertValidProviderId(raw.id);
+    } catch (err: any) {
+      return { valid: false, error: err.message };
     }
 
     if (isBuiltInIdCheck && RESERVED_PROVIDER_IDS.has(cleanId)) {
@@ -106,9 +150,18 @@ export class ProviderManifestService {
       };
     }
 
-    // 6. Provider Type
+    // 6. Provider Type (Reject invalid explicit types rather than silently defaulting)
     const validTypes: AIProviderType[] = ['local', 'api', 'subscription', 'enterprise', 'router'];
-    const cleanType: AIProviderType = validTypes.includes(raw.providerType) ? raw.providerType : 'api';
+    let cleanType: AIProviderType = 'api';
+    if (raw.providerType !== undefined && raw.providerType !== null) {
+      if (typeof raw.providerType !== 'string' || !validTypes.includes(raw.providerType as AIProviderType)) {
+        return {
+          valid: false,
+          error: `Invalid provider type "${raw.providerType}". Allowed values are: ${validTypes.join(', ')}.`,
+        };
+      }
+      cleanType = raw.providerType as AIProviderType;
+    }
 
     // 7. Base URL validation
     if (!raw.baseUrl || typeof raw.baseUrl !== 'string' || !raw.baseUrl.trim()) {
@@ -172,38 +225,92 @@ export class ProviderManifestService {
       }
     }
 
-    // 9. Endpoints validation (must be relative paths, no host-escape)
+    // 9. Endpoints validation (relative path normalization & escape check)
     let endpoints: ProviderManifest['endpoints'] = undefined;
     if (raw.endpoints && typeof raw.endpoints === 'object') {
       endpoints = {};
-      if (raw.endpoints.models) {
-        if (typeof raw.endpoints.models !== 'string' || raw.endpoints.models.includes('://')) {
-          return { valid: false, error: 'Endpoint "models" must be a relative path, not a full URL.' };
+      const validateEndpointPath = (fieldName: string, epValue: any): string | null => {
+        if (typeof epValue !== 'string' || !epValue.trim()) {
+          return `Endpoint "${fieldName}" must be a non-empty string.`;
         }
+        const trimmed = epValue.trim();
+
+        // Reject network path references (//) or full URLs (://)
+        if (trimmed.includes('://') || trimmed.startsWith('//')) {
+          return `Endpoint "${fieldName}" must be a relative path, not a full URL or network path.`;
+        }
+
+        // Reject backslashes
+        if (trimmed.includes('\\')) {
+          return `Endpoint "${fieldName}" cannot contain backslash characters.`;
+        }
+
+        // Reject control characters or whitespace
+        if (/[\r\n\t\0]/.test(trimmed)) {
+          return `Endpoint "${fieldName}" contains invalid control characters.`;
+        }
+
+        // Reject path traversal components (.. / /..)
+        if (trimmed.includes('..')) {
+          return `Endpoint "${fieldName}" cannot contain ".." traversal components.`;
+        }
+
+        // Normalize using POSIX path semantics
+        const normalized = path.posix.normalize(trimmed);
+        if (normalized === '..' || normalized.startsWith('../') || normalized.startsWith('/../')) {
+          return `Endpoint "${fieldName}" cannot traverse outside the base path boundary.`;
+        }
+
+        return null;
+      };
+
+      if (raw.endpoints.models !== undefined) {
+        const err = validateEndpointPath('models', raw.endpoints.models);
+        if (err) return { valid: false, error: err };
         endpoints.models = raw.endpoints.models.trim();
       }
-      if (raw.endpoints.chatCompletions) {
-        if (typeof raw.endpoints.chatCompletions !== 'string' || raw.endpoints.chatCompletions.includes('://')) {
-          return { valid: false, error: 'Endpoint "chatCompletions" must be a relative path, not a full URL.' };
-        }
+
+      if (raw.endpoints.chatCompletions !== undefined) {
+        const err = validateEndpointPath('chatCompletions', raw.endpoints.chatCompletions);
+        if (err) return { valid: false, error: err };
         endpoints.chatCompletions = raw.endpoints.chatCompletions.trim();
       }
     }
 
-    // 10. Custom Headers (sanitize and reject forbidden headers)
+    // 10. Custom Headers (sanitize, reject forbidden credential headers, reject CRLF injection)
     let customHeaders: Record<string, string> | undefined = undefined;
     if (raw.customHeaders && typeof raw.customHeaders === 'object' && !Array.isArray(raw.customHeaders)) {
       customHeaders = {};
       for (const [hKey, hVal] of Object.entries(raw.customHeaders)) {
         if (typeof hVal !== 'string') continue;
-        const lowerHKey = hKey.trim().toLowerCase();
-        if (FORBIDDEN_HEADER_KEYS.includes(lowerHKey)) {
+        const trimmedKey = hKey.trim();
+        const lowerHKey = trimmedKey.toLowerCase();
+
+        // Verify valid HTTP header token chars
+        if (!VALID_HEADER_TOKEN_REGEX.test(trimmedKey)) {
           return {
             valid: false,
-            error: `Custom header "${hKey}" is forbidden. Security headers cannot be specified in manifests.`,
+            error: `Custom header name "${hKey}" contains invalid header token characters.`,
           };
         }
-        customHeaders[hKey.trim()] = hVal.trim();
+
+        // Reject forbidden credential and security headers
+        if (FORBIDDEN_HEADER_KEYS.has(lowerHKey)) {
+          return {
+            valid: false,
+            error: `Custom header "${hKey}" is forbidden. Security and credential headers cannot be specified in manifests.`,
+          };
+        }
+
+        // Reject CRLF header injection in values
+        if (/[\r\n]/.test(hVal)) {
+          return {
+            valid: false,
+            error: `Custom header "${hKey}" value contains invalid newline characters (CR/LF injection attempt).`,
+          };
+        }
+
+        customHeaders[trimmedKey] = hVal.trim();
       }
     }
 
@@ -286,10 +393,10 @@ export class ProviderManifestService {
 
   /**
    * Get a single manifest by ID.
+   * Path containment is enforced locally.
    */
   public getManifest(id: string): ProviderManifest | null {
-    const cleanId = id.trim().toLowerCase();
-    const filePath = path.join(this.providersDir, `${cleanId}.json`);
+    const filePath = this.resolveManifestPath(id);
     if (!fs.existsSync(filePath)) {
       return null;
     }
@@ -308,12 +415,12 @@ export class ProviderManifestService {
 
   /**
    * Save a manifest atomically.
+   * Path containment is enforced locally.
    */
   public saveManifest(manifest: ProviderManifest): void {
     this.ensureDir();
-    const cleanId = manifest.id.trim().toLowerCase();
-    const targetFile = path.join(this.providersDir, `${cleanId}.json`);
-    const tempFile = path.join(this.providersDir, `.${cleanId}.${Date.now()}.tmp`);
+    const targetFile = this.resolveManifestPath(manifest.id);
+    const tempFile = path.resolve(this.providersDir, `.${manifest.id}.${Date.now()}.tmp`);
 
     const json = JSON.stringify(manifest, null, 2);
 
@@ -324,23 +431,23 @@ export class ProviderManifestService {
       try {
         if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
       } catch {}
-      throw new Error(`Failed to save provider manifest "${cleanId}": ${err.message}`);
+      throw new Error(`Failed to save provider manifest "${manifest.id}": ${err.message}`);
     }
   }
 
   /**
    * Delete a manifest file.
+   * Path containment is enforced locally.
    */
   public deleteManifest(id: string): boolean {
-    const cleanId = id.trim().toLowerCase();
-    const filePath = path.join(this.providersDir, `${cleanId}.json`);
+    const filePath = this.resolveManifestPath(id);
 
     if (fs.existsSync(filePath)) {
       try {
         fs.unlinkSync(filePath);
         return true;
       } catch (err: any) {
-        throw new Error(`Failed to delete manifest "${cleanId}": ${err.message}`);
+        throw new Error(`Failed to delete manifest "${id}": ${err.message}`);
       }
     }
 

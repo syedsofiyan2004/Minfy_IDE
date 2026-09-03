@@ -6,9 +6,10 @@ import os from 'node:os';
 import {
   ProviderManifestService,
   RESERVED_PROVIDER_IDS,
+  assertValidProviderId,
 } from '../src/services/ai/providerManifestService.js';
 
-describe('Provider Manifest Validation & Storage (Milestone 5)', () => {
+describe('Provider Manifest Validation & Storage (Milestones 5 & 5.1)', () => {
   let testDir: string;
   let service: ProviderManifestService;
 
@@ -175,8 +176,25 @@ describe('Provider Manifest Validation & Storage (Milestone 5)', () => {
     }
   });
 
-  it('rejects forbidden custom headers (Authorization, Host, Cookie, etc.)', () => {
-    const forbidden = ['Authorization', 'Host', 'Cookie', 'Content-Length'];
+  it('rejects forbidden credential and security headers (case-insensitive)', () => {
+    const forbidden = [
+      'Authorization',
+      'authorization',
+      'AUTHORIZATION',
+      'X-API-Key',
+      'x-api-key',
+      'Api-Key',
+      'api-key',
+      'X-Auth-Token',
+      'x-auth-token',
+      'X-Access-Token',
+      'Cookie',
+      'cookie',
+      'Set-Cookie',
+      'Proxy-Authorization',
+      'Host',
+      'Content-Length',
+    ];
 
     for (const header of forbidden) {
       const res = service.validateManifest({
@@ -193,6 +211,131 @@ describe('Provider Manifest Validation & Storage (Milestone 5)', () => {
       assert.strictEqual(res.valid, false, `Expected header "${header}" to be rejected`);
       assert.match(res.error || '', /forbidden/);
     }
+  });
+
+  it('rejects CR/LF header injection in custom headers', () => {
+    const crlfCases = [
+      { key: 'X-Custom-Header', val: 'value\r\nInjected: evil' },
+      { key: 'X-Custom-Header', val: 'value\nInjected: evil' },
+      { key: 'X-Custom\r\nHeader', val: 'normal' },
+    ];
+
+    for (const c of crlfCases) {
+      const res = service.validateManifest({
+        schemaVersion: 1,
+        id: 'crlf-header-ai',
+        name: 'CRLF AI',
+        protocol: 'openai-compatible',
+        baseUrl: 'https://ai.example.com/v1',
+        auth: { type: 'none' },
+        customHeaders: {
+          [c.key]: c.val,
+        },
+      });
+      assert.strictEqual(res.valid, false, `Expected CRLF in header to be rejected`);
+    }
+  });
+
+  it('accepts harmless custom headers', () => {
+    const res = service.validateManifest({
+      schemaVersion: 1,
+      id: 'harmless-header-ai',
+      name: 'Harmless Header AI',
+      protocol: 'openai-compatible',
+      baseUrl: 'https://ai.example.com/v1',
+      auth: { type: 'none' },
+      customHeaders: {
+        'X-Title': 'Minfy IDE',
+        'X-Client-Version': '1.0.0',
+      },
+    });
+    assert.strictEqual(res.valid, true);
+    assert.strictEqual(res.manifest?.customHeaders?.['X-Title'], 'Minfy IDE');
+    assert.strictEqual(res.manifest?.customHeaders?.['X-Client-Version'], '1.0.0');
+  });
+
+  it('validates relative endpoint overrides and blocks path traversal / network references', () => {
+    // Valid relative endpoints
+    const validEndpoints = [
+      { models: '/models', chatCompletions: '/chat/completions' },
+      { models: 'models', chatCompletions: 'chat/completions' },
+      { models: '/v1/models', chatCompletions: '/v1/chat/completions' },
+    ];
+
+    for (const ep of validEndpoints) {
+      const res = service.validateManifest({
+        schemaVersion: 1,
+        id: 'endpoint-ai',
+        name: 'Endpoint AI',
+        protocol: 'openai-compatible',
+        baseUrl: 'https://ai.example.com/v1',
+        auth: { type: 'none' },
+        endpoints: ep,
+      });
+      assert.strictEqual(res.valid, true, `Expected endpoints ${JSON.stringify(ep)} to be accepted`);
+    }
+
+    // Invalid / traversing endpoints
+    const invalidEndpoints = [
+      { models: '../models' },
+      { models: '/../models' },
+      { models: '//evil.example/models' },
+      { chatCompletions: '\\chat\\completions' },
+      { models: 'https://evil.example/models' },
+      { models: 'models\nwith-newline' },
+    ];
+
+    for (const ep of invalidEndpoints) {
+      const res = service.validateManifest({
+        schemaVersion: 1,
+        id: 'bad-endpoint-ai',
+        name: 'Bad Endpoint AI',
+        protocol: 'openai-compatible',
+        baseUrl: 'https://ai.example.com/v1',
+        auth: { type: 'none' },
+        endpoints: ep,
+      });
+      assert.strictEqual(res.valid, false, `Expected bad endpoint ${JSON.stringify(ep)} to be rejected`);
+    }
+  });
+
+  it('rejects invalid explicit providerType values rather than silently defaulting', () => {
+    const res = service.validateManifest({
+      schemaVersion: 1,
+      id: 'banana-type-ai',
+      name: 'Banana AI',
+      protocol: 'openai-compatible',
+      providerType: 'banana',
+      baseUrl: 'https://ai.example.com/v1',
+      auth: { type: 'none' },
+    });
+    assert.strictEqual(res.valid, false);
+    assert.match(res.error || '', /Invalid provider type/);
+  });
+
+  it('enforces filesystem boundary and path containment', () => {
+    // 1. getManifest with path traversal must throw
+    assert.throws(() => {
+      service.getManifest('../escape');
+    }, /Path traversal|slash characters|Invalid provider ID/);
+
+    // 2. deleteManifest with path traversal must throw
+    assert.throws(() => {
+      service.deleteManifest('../../escape');
+    }, /Path traversal|slash characters|Invalid provider ID/);
+
+    // 3. saveManifest with invalid ID must throw
+    assert.throws(() => {
+      service.saveManifest({
+        schemaVersion: 1,
+        id: '../escaped-id',
+        name: 'Escaped',
+        protocol: 'openai-compatible',
+        providerType: 'api',
+        baseUrl: 'https://ai.example.com',
+        auth: { type: 'none' },
+      });
+    }, /Path traversal|slash characters|Invalid provider ID/);
   });
 
   it('persists manifest atomically and reloads it', () => {

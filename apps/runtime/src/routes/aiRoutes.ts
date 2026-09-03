@@ -14,7 +14,7 @@ import {
 } from '@minfy/shared';
 import { aiProviderRegistry } from '../services/ai/aiRegistry.js';
 import { credentialStore } from '../services/credentialStore.js';
-import { providerManifestService } from '../services/ai/providerManifestService.js';
+import { providerManifestService, assertValidProviderId } from '../services/ai/providerManifestService.js';
 import { ProviderFactory } from '../services/ai/providerFactory.js';
 
 export const aiRouter = Router();
@@ -43,12 +43,22 @@ aiRouter.get('/providers', async (_req: Request, res: Response<ApiResponse<AIPro
 
 // GET /api/ai/providers/:id/models
 aiRouter.get('/providers/:id/models', async (req: Request<{ id: string }>, res: Response<ApiResponse<AIModelsResponse>>) => {
+  let providerId: string;
   try {
-    const models = await aiProviderRegistry.listModels(req.params.id);
+    providerId = assertValidProviderId(req.params.id);
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid provider ID: ${err.message}`,
+    });
+  }
+
+  try {
+    const models = await aiProviderRegistry.listModels(providerId);
     return res.json({
       success: true,
       data: {
-        providerId: req.params.id,
+        providerId,
         models,
       },
     });
@@ -62,7 +72,16 @@ aiRouter.get('/providers/:id/models', async (req: Request<{ id: string }>, res: 
 
 // POST /api/ai/providers/:id/connect (Generic credential validation & persistence)
 aiRouter.post('/providers/:id/connect', async (req: Request<{ id: string }, {}, ConnectProviderRequest>, res: Response<ApiResponse<ConnectProviderResponse>>) => {
-  const providerId = req.params.id;
+  let providerId: string;
+  try {
+    providerId = assertValidProviderId(req.params.id);
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid provider ID: ${err.message}`,
+    });
+  }
+
   const { apiKey } = req.body;
 
   if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
@@ -112,7 +131,16 @@ aiRouter.post('/providers/:id/connect', async (req: Request<{ id: string }, {}, 
 
 // DELETE /api/ai/providers/:id/connection
 aiRouter.delete('/providers/:id/connection', async (req: Request<{ id: string }>, res: Response<ApiResponse<{ connected: boolean }>>) => {
-  const providerId = req.params.id;
+  let providerId: string;
+  try {
+    providerId = assertValidProviderId(req.params.id);
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid provider ID: ${err.message}`,
+    });
+  }
+
   await credentialStore.delete(providerId);
 
   return res.json({
@@ -123,10 +151,10 @@ aiRouter.delete('/providers/:id/connection', async (req: Request<{ id: string }>
 });
 
 // ==========================================
-// Provider Manifest Management Endpoints (Milestone 5)
+// Provider Manifest Management Endpoints (Milestones 5 & 5.1)
 // ==========================================
 
-// GET /api/ai/manifests - List all custom provider manifests
+// GET /api/ai/manifests - List all custom provider manifests (including disabled)
 aiRouter.get('/manifests', (_req: Request, res: Response<ApiResponse<ProviderManifestsResponse>>) => {
   try {
     const manifests = providerManifestService.listManifests();
@@ -154,21 +182,42 @@ aiRouter.post('/manifests', (req: Request<{}, {}, any>, res: Response<ApiRespons
 
   const manifest = validation.manifest;
 
-  // Check if provider ID already exists in registry
-  if (aiProviderRegistry.getAdapter(manifest.id)) {
+  // Check if provider ID already exists in registry or in saved manifests
+  if (aiProviderRegistry.getAdapter(manifest.id) || providerManifestService.getManifest(manifest.id)) {
     return res.status(400).json({
       success: false,
       error: `Provider ID "${manifest.id}" already exists.`,
     });
   }
 
+  // Pre-validate adapter construction if provider is enabled
+  let adapter: any = null;
+  if (manifest.enabled !== false) {
+    try {
+      adapter = ProviderFactory.createProviderFromManifest(manifest);
+    } catch (err: any) {
+      return res.status(400).json({
+        success: false,
+        error: `Failed to initialize adapter from manifest: ${err.message}`,
+      });
+    }
+  }
+
   try {
     // 1. Persist manifest file to ~/.minfy/providers/
     providerManifestService.saveManifest(manifest);
 
-    // 2. Instantiate and dynamically register adapter
-    const adapter = ProviderFactory.createProviderFromManifest(manifest);
-    aiProviderRegistry.registerAdapter(adapter);
+    // 2. If enabled !== false, register adapter; rollback file on registration error
+    if (manifest.enabled !== false && adapter) {
+      try {
+        aiProviderRegistry.registerAdapter(adapter);
+      } catch (regErr: any) {
+        try {
+          providerManifestService.deleteManifest(manifest.id);
+        } catch {}
+        throw regErr;
+      }
+    }
 
     return res.status(201).json({
       success: true,
@@ -185,12 +234,27 @@ aiRouter.post('/manifests', (req: Request<{}, {}, any>, res: Response<ApiRespons
 
 // PUT /api/ai/manifests/:id - Update an existing custom provider manifest
 aiRouter.put('/manifests/:id', (req: Request<{ id: string }, {}, any>, res: Response<ApiResponse<ProviderManifest>>) => {
-  const providerId = req.params.id.toLowerCase();
+  let providerId: string;
+  try {
+    providerId = assertValidProviderId(req.params.id);
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid provider ID: ${err.message}`,
+    });
+  }
 
   if (aiProviderRegistry.isBuiltIn(providerId)) {
     return res.status(400).json({
       success: false,
       error: `Built-in provider "${providerId}" cannot be modified.`,
+    });
+  }
+
+  if (aiProviderRegistry.hasActiveGeneration(providerId)) {
+    return res.status(409).json({
+      success: false,
+      error: `Cannot disable or modify this provider while a generation is active. Stop the generation first.`,
     });
   }
 
@@ -214,18 +278,36 @@ aiRouter.put('/manifests/:id', (req: Request<{ id: string }, {}, any>, res: Resp
 
   const updatedManifest = validation.manifest;
 
+  // Pre-construct adapter if updated manifest is enabled
+  let newAdapter: any = null;
+  if (updatedManifest.enabled !== false) {
+    try {
+      newAdapter = ProviderFactory.createProviderFromManifest(updatedManifest);
+    } catch (err: any) {
+      return res.status(400).json({
+        success: false,
+        error: `Failed to construct replacement adapter: ${err.message}`,
+      });
+    }
+  }
+
   try {
-    // Save updated manifest
+    // 1. Save updated manifest
     providerManifestService.saveManifest(updatedManifest);
 
-    // If auth changed from Bearer to None, delete stored credentials
-    if (existing.auth.type === 'bearer' && updatedManifest.auth.type === 'none') {
-      credentialStore.delete(providerId).catch(() => {});
+    // 2. Handle Enabled/Disabled transitions
+    if (updatedManifest.enabled === false) {
+      // Enabled -> Disabled: unregister adapter from registry, keep stored credential
+      if (aiProviderRegistry.getAdapter(providerId)) {
+        aiProviderRegistry.unregisterAdapter(providerId);
+      }
+    } else {
+      // Disabled -> Enabled or Enabled -> Updated
+      if (existing.auth.type === 'bearer' && updatedManifest.auth.type === 'none') {
+        credentialStore.delete(providerId).catch(() => {});
+      }
+      aiProviderRegistry.registerAdapter(newAdapter);
     }
-
-    // Re-instantiate and update in registry
-    const newAdapter = ProviderFactory.createProviderFromManifest(updatedManifest);
-    aiProviderRegistry.registerAdapter(newAdapter);
 
     return res.json({
       success: true,
@@ -242,7 +324,15 @@ aiRouter.put('/manifests/:id', (req: Request<{ id: string }, {}, any>, res: Resp
 
 // DELETE /api/ai/manifests/:id - Delete a custom provider manifest
 aiRouter.delete('/manifests/:id', async (req: Request<{ id: string }>, res: Response<ApiResponse<{ deleted: boolean }>>) => {
-  const providerId = req.params.id.toLowerCase();
+  let providerId: string;
+  try {
+    providerId = assertValidProviderId(req.params.id);
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid provider ID: ${err.message}`,
+    });
+  }
 
   if (aiProviderRegistry.isBuiltIn(providerId)) {
     return res.status(400).json({
@@ -259,11 +349,19 @@ aiRouter.delete('/manifests/:id', async (req: Request<{ id: string }>, res: Resp
   }
 
   try {
-    // 1. Unregister adapter
-    aiProviderRegistry.unregisterAdapter(providerId);
+    // 1. Unregister adapter if registered
+    if (aiProviderRegistry.getAdapter(providerId)) {
+      aiProviderRegistry.unregisterAdapter(providerId);
+    }
 
     // 2. Delete manifest file
-    providerManifestService.deleteManifest(providerId);
+    const deleted = providerManifestService.deleteManifest(providerId);
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        error: `Provider manifest "${providerId}" not found.`,
+      });
+    }
 
     // 3. Remove any stored credentials
     await credentialStore.delete(providerId);
