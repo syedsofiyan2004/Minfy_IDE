@@ -21,7 +21,9 @@ export class ProviderFactory {
       source: manifest.source || 'custom',
       baseUrl: manifest.baseUrl,
       requiresAuth,
-      getApiKey: requiresAuth ? () => credentialStore.getCredential(manifest.id) : undefined,
+      getApiKey: requiresAuth
+        ? async () => (await credentialStore.get(manifest.id)) ?? undefined
+        : undefined,
       endpoints: manifest.endpoints,
       defaultExecutionLocation: manifest.defaults?.executionLocation || 'unknown',
       defaultBillingType: manifest.defaults?.billingType || 'unknown',

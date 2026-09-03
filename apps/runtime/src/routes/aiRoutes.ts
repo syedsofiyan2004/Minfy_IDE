@@ -233,7 +233,7 @@ aiRouter.post('/manifests', (req: Request<{}, {}, any>, res: Response<ApiRespons
 });
 
 // PUT /api/ai/manifests/:id - Update an existing custom provider manifest
-aiRouter.put('/manifests/:id', (req: Request<{ id: string }, {}, any>, res: Response<ApiResponse<ProviderManifest>>) => {
+aiRouter.put('/manifests/:id', async (req: Request<{ id: string }, {}, any>, res: Response<ApiResponse<ProviderManifest>>) => {
   let providerId: string;
   try {
     providerId = assertValidProviderId(req.params.id);
@@ -295,16 +295,23 @@ aiRouter.put('/manifests/:id', (req: Request<{ id: string }, {}, any>, res: Resp
     // 1. Save updated manifest
     providerManifestService.saveManifest(updatedManifest);
 
-    // 2. Handle Enabled/Disabled transitions
+    // 2. Authentication Scheme Cleanup:
+    // Whenever auth type changed from bearer to none, delete stored credential regardless of enabled state
+    if (existing.auth.type === 'bearer' && updatedManifest.auth.type === 'none') {
+      await credentialStore.delete(providerId);
+    }
+
+    // 3. Handle Enabled/Disabled transitions
     if (updatedManifest.enabled === false) {
       // Enabled -> Disabled: unregister adapter from registry, keep stored credential
       if (aiProviderRegistry.getAdapter(providerId)) {
         aiProviderRegistry.unregisterAdapter(providerId);
       }
     } else {
-      // Disabled -> Enabled or Enabled -> Updated
-      if (existing.auth.type === 'bearer' && updatedManifest.auth.type === 'none') {
-        credentialStore.delete(providerId).catch(() => {});
+      // Disabled -> Enabled or Enabled -> Updated:
+      // If bearer auth, recover persisted credential into hot cache so status/connection is immediate
+      if (updatedManifest.auth.type === 'bearer') {
+        await credentialStore.get(providerId);
       }
       aiProviderRegistry.registerAdapter(newAdapter);
     }

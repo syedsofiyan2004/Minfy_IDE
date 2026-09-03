@@ -103,7 +103,15 @@ export class AIProviderRegistry {
       try {
         const { status, reason, modelsCount } = await adapter.getStatus();
         const requiresAuth = (adapter as any).requiresAuth ?? false;
-        const connected = requiresAuth ? credentialStore.hasCredential(adapter.id) : status === 'available';
+        let connected = status === 'available';
+        if (requiresAuth) {
+          if (credentialStore.hasCredential(adapter.id)) {
+            connected = true;
+          } else {
+            const cred = await credentialStore.get(adapter.id);
+            connected = Boolean(cred);
+          }
+        }
 
         providers.push({
           id: adapter.id,
