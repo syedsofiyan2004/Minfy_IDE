@@ -1,13 +1,13 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { BedrockAdapter } from '../src/services/ai/bedrock/bedrockAdapter.js';
+import { BedrockAdapter, sanitizeAwsErrorMessage } from '../src/services/ai/bedrock/bedrockAdapter.js';
 import { bedrockClientFactory } from '../src/services/ai/bedrock/bedrockClientFactory.js';
 import { bedrockConfigService } from '../src/services/ai/bedrock/bedrockConfigService.js';
 import { credentialStore } from '../src/services/credentialStore.js';
 import { aiProviderRegistry } from '../src/services/ai/aiRegistry.js';
 import { AIStreamEvent } from '@minfy/shared';
 
-describe('AWS Bedrock Native Provider Adapter (Milestones 6 & 6.1)', () => {
+describe('AWS Bedrock Native Provider Adapter (Milestones 6, 6.1 & 6.1.1)', () => {
   let adapter: BedrockAdapter;
 
   beforeEach(() => {
@@ -350,6 +350,21 @@ describe('AWS Bedrock Native Provider Adapter (Milestones 6 & 6.1)', () => {
       const origGetConfig = bedrockConfigService.getConfig;
       bedrockConfigService.getConfig = () => ({ region: 'us-east-1', configured: true });
 
+      const mockBedrock = {
+        send: async () => ({
+          modelSummaries: [
+            {
+              modelId: 'bad-model-v1',
+              modelName: 'Bad Model',
+              inputModalities: ['TEXT'],
+              outputModalities: ['TEXT'],
+              responseStreamingSupported: true,
+            },
+          ],
+          inferenceProfileSummaries: [],
+        }),
+      };
+
       const mockRuntime = {
         send: async () => {
           const err: any = new Error('ValidationException: The provided model does not support the Converse operation');
@@ -358,7 +373,7 @@ describe('AWS Bedrock Native Provider Adapter (Milestones 6 & 6.1)', () => {
         },
       };
 
-      bedrockClientFactory.setMockClients({ runtimeClient: mockRuntime });
+      bedrockClientFactory.setMockClients({ bedrockClient: mockBedrock, runtimeClient: mockRuntime });
 
       try {
         const events: AIStreamEvent[] = [];
@@ -380,6 +395,202 @@ describe('AWS Bedrock Native Provider Adapter (Milestones 6 & 6.1)', () => {
       } finally {
         bedrockConfigService.getConfig = origGetConfig;
       }
+    });
+  });
+
+  describe('Application Inference Profile Invocation & Target Resolution (Milestone 6.1.1)', () => {
+    it('separates public model identity from private ARN, invokes application profile with ARN, and preserves public ID in usage', async () => {
+      const origGetConfig = bedrockConfigService.getConfig;
+      bedrockConfigService.getConfig = () => ({ region: 'us-east-1', configured: true });
+
+      const appProfileArn = 'arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/app-cost-profile';
+      const appProfileId = 'app-cost-profile';
+
+      const mockBedrock = {
+        send: async (command: any) => {
+          if (command.constructor.name === 'ListFoundationModelsCommand') {
+            return { modelSummaries: [] };
+          }
+          if (command.constructor.name === 'ListInferenceProfilesCommand') {
+            return {
+              inferenceProfileSummaries: [
+                {
+                  inferenceProfileId: appProfileId,
+                  inferenceProfileArn: appProfileArn,
+                  inferenceProfileName: 'App Cost Profile',
+                  type: 'APPLICATION',
+                  status: 'ACTIVE',
+                  models: [
+                    { modelArn: 'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0' },
+                  ],
+                },
+                {
+                  inferenceProfileId: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+                  inferenceProfileArn: 'arn:aws:bedrock:us-east-1::inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+                  inferenceProfileName: 'Claude 3.5 Sonnet v2',
+                  type: 'SYSTEM_DEFINED',
+                  status: 'ACTIVE',
+                  models: [
+                    { modelArn: 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0' },
+                  ],
+                },
+              ],
+            };
+          }
+          return {};
+        },
+      };
+
+      let invokedCommand: any = null;
+      const mockRuntime = {
+        send: async (command: any) => {
+          invokedCommand = command;
+          return {
+            stream: (async function* () {
+              yield {
+                contentBlockDelta: { delta: { text: 'Hello from app profile' } },
+                metadata: { usage: { inputTokens: 5, outputTokens: 6 } },
+              };
+            })(),
+          };
+        },
+      };
+
+      bedrockClientFactory.setMockClients({ bedrockClient: mockBedrock, runtimeClient: mockRuntime });
+
+      try {
+        // 1. Discover models
+        const models = await adapter.listModels();
+
+        // 2. Verify frontend-facing AIModel uses ONLY public profile ID (NEVER ARN, NEVER Account ID)
+        const appModel = models.find((m) => m.id === appProfileId);
+        assert.ok(appModel, 'Application profile should be listed by public ID');
+        assert.strictEqual(appModel.id, appProfileId);
+        assert.strictEqual(appModel.id.includes('arn:aws'), false);
+        assert.strictEqual(appModel.id.includes('123456789012'), false);
+
+        const sysModel = models.find((m) => m.id === 'us.anthropic.claude-3-5-sonnet-20241022-v2:0');
+        assert.ok(sysModel, 'SYSTEM_DEFINED profile should be listed by public ID');
+        assert.strictEqual(sysModel.id, 'us.anthropic.claude-3-5-sonnet-20241022-v2:0');
+
+        // 3. Verify internal runtime target mapping retains the ARN runtime-side
+        const internalTarget = (adapter as any).inferenceTargets.get(appProfileId);
+        assert.ok(internalTarget);
+        assert.strictEqual(internalTarget.publicId, appProfileId);
+        assert.strictEqual(internalTarget.invocationTarget, appProfileArn);
+        assert.strictEqual(internalTarget.type, 'application-inference-profile');
+
+        // 4. Generate with APPLICATION profile: Invocation MUST resolve to ARN
+        const events: AIStreamEvent[] = [];
+        const usage = await adapter.generate(
+          {
+            providerId: 'bedrock',
+            modelId: appProfileId,
+            prompt: 'Test prompt',
+          },
+          (ev) => events.push(ev)
+        );
+
+        // Verify ConverseStreamCommand received the ARN
+        assert.ok(invokedCommand);
+        assert.strictEqual(invokedCommand.input.modelId, appProfileArn, 'AWS ConverseStream must be called with the application profile ARN');
+
+        // 5. Verify browser-facing AIUsage retains ONLY the public profile ID
+        assert.strictEqual(usage.modelId, appProfileId);
+        assert.strictEqual(usage.resolvedModelId, appProfileId);
+        assert.strictEqual(usage.modelId.includes('arn:aws'), false);
+        assert.strictEqual(usage.modelId.includes('123456789012'), false);
+
+        // 6. Generate with SYSTEM_DEFINED profile: Invocation uses public ID / system target
+        await adapter.generate(
+          {
+            providerId: 'bedrock',
+            modelId: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+            prompt: 'Test sys',
+          },
+          () => {}
+        );
+        assert.strictEqual(invokedCommand.input.modelId, 'us.anthropic.claude-3-5-sonnet-20241022-v2:0');
+
+        // 7. Cache invalidation clears target mapping
+        adapter.invalidateCache();
+        assert.strictEqual((adapter as any).inferenceTargets.size, 0);
+
+        // 8. Stale/unknown application profile target fails cleanly
+        mockBedrock.send = async () => ({ modelSummaries: [], inferenceProfileSummaries: [] });
+        await assert.rejects(
+          adapter.generate(
+            {
+              providerId: 'bedrock',
+              modelId: 'stale-app-profile',
+              prompt: 'Test',
+            },
+            () => {}
+          ),
+          /The selected Bedrock inference target is no longer available. Refresh Bedrock models and try again./
+        );
+      } finally {
+        bedrockConfigService.getConfig = origGetConfig;
+      }
+    });
+  });
+
+  describe('User-Facing AWS Error Redaction & ARN Privacy (Milestone 6.1.1)', () => {
+    it('redacts ARNs from ValidationException messages', () => {
+      const err = new Error(
+        'ValidationException: Inference profile arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/foo is not valid'
+      );
+      (err as any).name = 'ValidationException';
+
+      const normalized = adapter.normalizeError(err);
+      assert.strictEqual(
+        normalized,
+        'Bedrock request validation failed: Inference profile [AWS ARN redacted] is not valid'
+      );
+      assert.strictEqual(normalized.includes('123456789012'), false);
+      assert.strictEqual(normalized.includes('arn:aws:'), false);
+    });
+
+    it('redacts IAM ARNs from generic AWS errors', () => {
+      const err = new Error('User: arn:aws:iam::999888777666:user/admin is not authorized to perform this operation');
+      const normalized = adapter.normalizeError(err);
+      assert.strictEqual(
+        normalized,
+        'User: [AWS ARN redacted] is not authorized to perform this operation'
+      );
+      assert.strictEqual(normalized.includes('999888777666'), false);
+    });
+
+    it('redacts standalone 12-digit account numbers from arbitrary AWS error messages', () => {
+      const err = new Error('Resource for AWS account 999888777666 cannot be found');
+      const normalized = adapter.normalizeError(err);
+      assert.strictEqual(
+        normalized,
+        'Resource for AWS account [AWS account redacted] cannot be found'
+      );
+      assert.strictEqual(normalized.includes('999888777666'), false);
+    });
+
+    it('preserves clean AccessDenied messages without exposing sensitive data', () => {
+      const err: any = new Error('AccessDeniedException: User arn:aws:iam::111222333444:user/test is not authorized');
+      err.name = 'AccessDeniedException';
+
+      const normalized = adapter.normalizeError(err, 'control-plane');
+      assert.strictEqual(
+        normalized,
+        'AWS credentials are valid, but this identity does not have permission to use Amazon Bedrock.'
+      );
+    });
+
+    it('leaves ordinary non-sensitive error messages unchanged', () => {
+      assert.strictEqual(
+        sanitizeAwsErrorMessage('Amazon Bedrock is throttling requests. Try again shortly.'),
+        'Amazon Bedrock is throttling requests. Try again shortly.'
+      );
+      assert.strictEqual(
+        sanitizeAwsErrorMessage('This Bedrock model is not ready. Try again shortly.'),
+        'This Bedrock model is not ready. Try again shortly.'
+      );
     });
   });
 

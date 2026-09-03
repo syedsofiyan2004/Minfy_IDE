@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { BedrockConfigService, isValidAwsRegion } from '../src/services/ai/bedrock/bedrockConfigService.js';
 
-describe('AWS Bedrock Configuration & Secret Safety (Milestones 6 & 6.1)', () => {
+describe('AWS Bedrock Configuration & Secret Safety (Milestones 6, 6.1 & 6.1.1)', () => {
   let tempDir: string;
   let configPath: string;
   let configService: BedrockConfigService;
@@ -108,13 +108,11 @@ describe('AWS Bedrock Configuration & Secret Safety (Milestones 6 & 6.1)', () =>
   });
 
   it('does not silently select an unrelated profile region from ~/.aws/config', () => {
-    // Test profile-aware parsing logic
     const origHomedir = os.homedir;
     const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'minfy-aws-cfg-test-'));
     const awsDir = path.join(fakeHome, '.aws');
     fs.mkdirSync(awsDir, { recursive: true });
 
-    // Put region under a different profile first
     fs.writeFileSync(
       path.join(awsDir, 'config'),
       `
@@ -140,6 +138,65 @@ region = ap-southeast-1
       (os as any).homedir = origHomedir;
       try {
         fs.rmSync(fakeHome, { recursive: true, force: true });
+      } catch {}
+    }
+  });
+
+  it('resolves AWS_PROFILE-selected profile region and respects priority and custom AWS_CONFIG_FILE', () => {
+    const origEnv = { ...process.env };
+    const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minfy-aws-env-test-'));
+    const customConfigFile = path.join(fakeDir, 'custom-aws-config');
+
+    fs.writeFileSync(
+      customConfigFile,
+      `
+[default]
+region = us-east-1
+
+[profile bedrock-main]
+region = ap-south-1
+
+[profile work-profile]
+region = eu-central-1
+`,
+      'utf-8'
+    );
+
+    try {
+      delete process.env.AWS_REGION;
+      delete process.env.AWS_DEFAULT_REGION;
+      delete process.env.AWS_PROFILE;
+      process.env.AWS_CONFIG_FILE = customConfigFile;
+
+      // 1. Custom AWS_CONFIG_FILE is respected
+      assert.strictEqual(configService.getAwsConfigFilePath(), customConfigFile);
+
+      // 2. When no env vars or explicit profile: default profile region
+      assert.strictEqual(configService.detectDefaultRegion(), 'us-east-1');
+
+      // 3. AWS_PROFILE selects that profile's region
+      process.env.AWS_PROFILE = 'bedrock-main';
+      assert.strictEqual(configService.detectDefaultRegion(), 'ap-south-1');
+
+      // 4. If AWS_PROFILE points to an unconfigured profile, does NOT fall back to default profile
+      process.env.AWS_PROFILE = 'unknown-profile';
+      assert.strictEqual(configService.detectDefaultRegion(), undefined);
+
+      // 5. Explicit Minfy profile overrides AWS_PROFILE
+      process.env.AWS_PROFILE = 'bedrock-main';
+      assert.strictEqual(configService.detectDefaultRegion('work-profile'), 'eu-central-1');
+
+      // 6. AWS_DEFAULT_REGION has higher priority than AWS_PROFILE
+      process.env.AWS_DEFAULT_REGION = 'sa-east-1';
+      assert.strictEqual(configService.detectDefaultRegion(), 'sa-east-1');
+
+      // 7. AWS_REGION has highest priority
+      process.env.AWS_REGION = 'ca-central-1';
+      assert.strictEqual(configService.detectDefaultRegion(), 'ca-central-1');
+    } finally {
+      process.env = origEnv;
+      try {
+        fs.rmSync(fakeDir, { recursive: true, force: true });
       } catch {}
     }
   });

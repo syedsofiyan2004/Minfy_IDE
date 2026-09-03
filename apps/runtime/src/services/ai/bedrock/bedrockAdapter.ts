@@ -20,7 +20,7 @@ import { AIProviderAdapter } from '../types.js';
 import { bedrockConfigService } from './bedrockConfigService.js';
 import { bedrockClientFactory } from './bedrockClientFactory.js';
 
-// Well-known Bedrock model families with authoritative AWS Converse API support
+// Known Converse-compatible model ID prefixes
 const CONVERSE_SUPPORTED_FAMILIES = [
   'anthropic.claude',
   'amazon.nova',
@@ -34,7 +34,13 @@ const CONVERSE_SUPPORTED_FAMILIES = [
 export function isKnownConverseSupported(modelId: string): boolean {
   if (!modelId) return false;
   const lower = modelId.toLowerCase();
-  return CONVERSE_SUPPORTED_FAMILIES.some((family) => lower.includes(family));
+  return CONVERSE_SUPPORTED_FAMILIES.some((prefix) => lower.includes(prefix));
+}
+
+export interface BedrockInferenceTarget {
+  publicId: string;
+  invocationTarget: string;
+  type: 'foundation-model' | 'system-inference-profile' | 'application-inference-profile';
 }
 
 export interface BedrockConnectionSnapshot {
@@ -49,6 +55,26 @@ export interface BedrockConnectionSnapshot {
   key: string;
 }
 
+/**
+ * Sanitizes any user-facing AWS error message to ensure zero AWS ARNs
+ * and zero 12-digit AWS Account IDs leak to the browser or client responses.
+ */
+export function sanitizeAwsErrorMessage(message: string): string {
+  if (!message || typeof message !== 'string') return message;
+
+  let sanitized = message;
+
+  // 1. Redact AWS ARNs across all partitions (aws, aws-us-gov, aws-cn, aws-iso, etc.)
+  const arnRegex = /arn:aws[a-z0-9-]*:[a-z0-9-]*:[a-z0-9-]*:[0-9]*:[^"'\s,;:)]+/gi;
+  sanitized = sanitized.replace(arnRegex, '[AWS ARN redacted]');
+
+  // 2. Redact 12-digit AWS Account IDs (isolated or within ARN/identity strings)
+  const accountRegex = /\b\d{12}\b/g;
+  sanitized = sanitized.replace(accountRegex, '[AWS account redacted]');
+
+  return sanitized;
+}
+
 export class BedrockAdapter implements AIProviderAdapter {
   public readonly id = 'bedrock';
   public readonly name = 'AWS Bedrock';
@@ -60,6 +86,8 @@ export class BedrockAdapter implements AIProviderAdapter {
   private connectionSnapshot: BedrockConnectionSnapshot | null = null;
   // Cache discovery results for 60s
   private modelCache: { models: AIModel[]; timestamp: number; key: string } | null = null;
+  // Private runtime-side target mapping: publicId -> BedrockInferenceTarget
+  private inferenceTargets: Map<string, BedrockInferenceTarget> = new Map();
   // Session memory for targets that fail specifically because Converse is not supported
   private sessionIncompatibleTargets: Set<string> = new Set();
 
@@ -72,6 +100,7 @@ export class BedrockAdapter implements AIProviderAdapter {
   public invalidateCache(): void {
     this.connectionSnapshot = null;
     this.modelCache = null;
+    this.inferenceTargets.clear();
   }
 
   private getConfigKey(): string {
@@ -85,83 +114,81 @@ export class BedrockAdapter implements AIProviderAdapter {
     const code = err.name || err.code || err.__type || '';
     const message = err.message || '';
 
+    let rawMessage: string;
+
     // Credential resolution failure
     if (
       code === 'CredentialsProviderError' ||
       message.includes('Could not load credentials from any providers') ||
       message.includes('CredentialsProviderError')
     ) {
-      return 'AWS credentials could not be resolved.';
+      rawMessage = 'AWS credentials could not be resolved.';
     }
-
     // Expired session / token
-    if (
+    else if (
       code === 'ExpiredToken' ||
       code === 'ExpiredTokenException' ||
       message.includes('The security token included in the request is expired') ||
       message.includes('Token has expired')
     ) {
-      return 'Your AWS session has expired. Sign in again using your configured AWS profile.';
+      rawMessage = 'Your AWS session has expired. Sign in again using your configured AWS profile.';
     }
-
     // Access Denied / IAM Permissions
-    if (code === 'AccessDeniedException' || code === 'UnauthorizedException' || message.includes('AccessDenied')) {
+    else if (code === 'AccessDeniedException' || code === 'UnauthorizedException' || message.includes('AccessDenied')) {
       if (context === 'runtime') {
-        return "You don't have permission to invoke this Bedrock model. Check your IAM policy for bedrock:InvokeModelWithResponseStream.";
+        rawMessage = "You don't have permission to invoke this Bedrock model. Check your IAM policy for bedrock:InvokeModelWithResponseStream.";
+      } else {
+        rawMessage = 'AWS credentials are valid, but this identity does not have permission to use Amazon Bedrock.';
       }
-      return 'AWS credentials are valid, but this identity does not have permission to use Amazon Bedrock.';
     }
-
     // Throttling
-    if (code === 'ThrottlingException' || code === 'TooManyRequestsException' || message.includes('throttl')) {
-      return 'Amazon Bedrock is throttling requests. Try again shortly.';
+    else if (code === 'ThrottlingException' || code === 'TooManyRequestsException' || message.includes('throttl')) {
+      rawMessage = 'Amazon Bedrock is throttling requests. Try again shortly.';
     }
-
     // Resource / Model Not Found
-    if (code === 'ResourceNotFoundException' || message.includes('ResourceNotFound')) {
-      return 'The selected Bedrock model or inference target is not available in the selected Region or profile.';
+    else if (code === 'ResourceNotFoundException' || message.includes('ResourceNotFound')) {
+      rawMessage = 'The selected Bedrock model or inference target is not available in the selected Region or profile.';
     }
-
     // Service Unavailable
-    if (
+    else if (
       code === 'ServiceUnavailableException' ||
       code === 'serviceUnavailableException' ||
       message.includes('ServiceUnavailable')
     ) {
-      return 'Amazon Bedrock is temporarily unavailable. Try again shortly.';
+      rawMessage = 'Amazon Bedrock is temporarily unavailable. Try again shortly.';
     }
-
     // Model Not Ready
-    if (code === 'ModelNotReadyException' || message.includes('ModelNotReady')) {
-      return 'This Bedrock model is not ready. Try again shortly.';
+    else if (code === 'ModelNotReadyException' || message.includes('ModelNotReady')) {
+      rawMessage = 'This Bedrock model is not ready. Try again shortly.';
     }
-
     // Model Timeout
-    if (code === 'ModelTimeoutException' || message.includes('ModelTimeout')) {
-      return 'Amazon Bedrock request timed out.';
+    else if (code === 'ModelTimeoutException' || message.includes('ModelTimeout')) {
+      rawMessage = 'Amazon Bedrock request timed out.';
     }
-
     // Validation Exception
-    if (code === 'ValidationException' || message.includes('ValidationException')) {
+    else if (code === 'ValidationException' || message.includes('ValidationException')) {
       const lower = message.toLowerCase();
       if (lower.includes('converse') || lower.includes('not supported') || lower.includes('unsupported model')) {
-        return 'This Bedrock model does not support the Converse API.';
+        rawMessage = 'This Bedrock model does not support the Converse API.';
+      } else {
+        rawMessage = `Bedrock request validation failed: ${message.replace(/^ValidationException:\s*/i, '')}`;
       }
-      return `Bedrock request validation failed: ${message.replace(/^ValidationException:\s*/i, '')}`;
     }
-
     // Endpoint / Network failure
-    if (
+    else if (
       code === 'NetworkingError' ||
       code === 'TimeoutError' ||
       err.code === 'ECONNREFUSED' ||
       err.code === 'ENOTFOUND' ||
       message.includes('getaddrinfo')
     ) {
-      return 'Amazon Bedrock could not be reached. Check your network or AWS Region configuration.';
+      rawMessage = 'Amazon Bedrock could not be reached. Check your network or AWS Region configuration.';
+    } else {
+      rawMessage = message || 'Amazon Bedrock request failed.';
     }
 
-    return message || 'Amazon Bedrock request failed.';
+    // Apply centralized AWS privacy sanitization before returning to user/browser
+    return sanitizeAwsErrorMessage(rawMessage);
   }
 
   /**
@@ -340,6 +367,13 @@ export class BedrockAdapter implements AIProviderAdapter {
         // Distinguish verified Converse-compatible from unknown
         const isConverseCompatible = isKnownConverseSupported(fm.modelId);
 
+        // Record internal inference target mapping
+        this.inferenceTargets.set(fm.modelId, {
+          publicId: fm.modelId,
+          invocationTarget: fm.modelId,
+          type: 'foundation-model',
+        });
+
         discoveredModels.push({
           id: fm.modelId,
           providerId: this.id,
@@ -368,8 +402,8 @@ export class BedrockAdapter implements AIProviderAdapter {
 
         const summaries = ipRes.inferenceProfileSummaries || [];
         for (const ip of summaries) {
-          const targetId = ip.inferenceProfileId || ip.inferenceProfileArn;
-          if (!targetId || ip.status !== 'ACTIVE') continue;
+          const publicId = ip.inferenceProfileId || (ip.inferenceProfileArn ? ip.inferenceProfileArn.split('/').pop() : undefined);
+          if (!publicId || ip.status !== 'ACTIVE') continue;
 
           // Only show system-defined or application inference profiles
           const ipType = ip.type;
@@ -378,7 +412,7 @@ export class BedrockAdapter implements AIProviderAdapter {
           }
 
           // Skip session-incompatible targets
-          if (this.sessionIncompatibleTargets.has(targetId)) {
+          if (this.sessionIncompatibleTargets.has(publicId)) {
             continue;
           }
 
@@ -420,7 +454,7 @@ export class BedrockAdapter implements AIProviderAdapter {
           // Determine cross-Region routing accurately
           let isCrossRegion: boolean | undefined = undefined;
           if (ipType === 'SYSTEM_DEFINED') {
-            const targetLower = targetId.toLowerCase();
+            const targetLower = publicId.toLowerCase();
             if (
               destinationRegions.size > 1 ||
               targetLower.startsWith('us.') ||
@@ -445,14 +479,27 @@ export class BedrockAdapter implements AIProviderAdapter {
             }
           }
 
+          // AWS Invocation target semantics:
+          // SYSTEM_DEFINED: public ID or ARN works; prefer public ID
+          // APPLICATION: MUST use inferenceProfileArn
+          const invocationTarget = ipType === 'APPLICATION'
+            ? (ip.inferenceProfileArn || publicId)
+            : (ip.inferenceProfileId || ip.inferenceProfileArn);
+
+          this.inferenceTargets.set(publicId, {
+            publicId,
+            invocationTarget,
+            type: ipType === 'APPLICATION' ? 'application-inference-profile' : 'system-inference-profile',
+          });
+
           // Format clean display name with [Inference Profile] tag
-          const cleanName = ip.inferenceProfileName || targetId;
+          const cleanName = ip.inferenceProfileName || publicId;
           const displayName = `${cleanName} [Inference Profile]`;
 
           // Deduplicate if already present
-          if (!discoveredModels.some((m) => m.id === targetId)) {
+          if (!discoveredModels.some((m) => m.id === publicId)) {
             discoveredModels.push({
-              id: targetId,
+              id: publicId, // ALWAYS public ID, NEVER the account-bearing ARN!
               providerId: this.id,
               displayName,
               executionLocation: 'cloud',
@@ -507,11 +554,22 @@ export class BedrockAdapter implements AIProviderAdapter {
       throw new Error('AWS Region is not configured for Bedrock.');
     }
 
+    // Ensure models are discovered and internal target mapping is populated
+    if (this.inferenceTargets.size === 0) {
+      await this.listModels();
+    }
+
+    // Resolve public model ID to provider-native invocation target
+    const target = this.inferenceTargets.get(request.modelId);
+    if (!target) {
+      throw new Error('The selected Bedrock inference target is no longer available. Refresh Bedrock models and try again.');
+    }
+
     const runtimeClient = bedrockClientFactory.getBedrockRuntimeClient(config.region, config.profile);
     const startTime = Date.now();
 
     const input: ConverseStreamCommandInput = {
-      modelId: request.modelId,
+      modelId: target.invocationTarget, // AWS-native target (e.g. ARN for application profiles)
       messages: [
         {
           role: 'user',
@@ -600,8 +658,8 @@ export class BedrockAdapter implements AIProviderAdapter {
     const durationMs = Date.now() - startTime;
     const usage: AIUsage = {
       providerId: this.id,
-      modelId: request.modelId,
-      resolvedModelId: request.modelId,
+      modelId: request.modelId, // Public Minfy target ID (safe, no ARN)
+      resolvedModelId: request.modelId, // Public Minfy target ID (safe, no ARN)
       executionLocation: 'cloud',
       billingType: 'metered',
       startedAt: new Date(startTime).toISOString(),

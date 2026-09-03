@@ -51,47 +51,84 @@ export class BedrockConfigService {
   }
 
   /**
-   * Try detecting AWS default region from environment or profile-specific section in ~/.aws/config
+   * Resolves path to AWS config file, respecting AWS_CONFIG_FILE environment variable.
    */
-  public detectDefaultRegion(profile?: string): string | undefined {
-    // 1. Check standard AWS environment variables
-    if (process.env.AWS_REGION && isValidAwsRegion(process.env.AWS_REGION.trim())) {
-      return process.env.AWS_REGION.trim().toLowerCase();
+  public getAwsConfigFilePath(): string {
+    if (process.env.AWS_CONFIG_FILE && process.env.AWS_CONFIG_FILE.trim()) {
+      return process.env.AWS_CONFIG_FILE.trim();
     }
-    if (process.env.AWS_DEFAULT_REGION && isValidAwsRegion(process.env.AWS_DEFAULT_REGION.trim())) {
-      return process.env.AWS_DEFAULT_REGION.trim().toLowerCase();
-    }
+    return path.join(os.homedir(), '.aws', 'config');
+  }
 
-    // 2. Profile-aware ~/.aws/config parsing (strictly isolated by section)
+  /**
+   * Reads a profile's region from the AWS config file.
+   */
+  private readRegionFromAwsConfigFile(targetProfile: string): string | undefined {
     try {
-      const awsConfigPath = path.join(os.homedir(), '.aws', 'config');
-      if (fs.existsSync(awsConfigPath)) {
-        const content = fs.readFileSync(awsConfigPath, 'utf-8');
-        const lines = content.split('\n');
-        const targetSection = profile && profile !== 'default' ? `profile ${profile}` : 'default';
+      const configPath = this.getAwsConfigFilePath();
+      if (!fs.existsSync(configPath)) return undefined;
 
-        let currentSection: string | null = null;
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-            currentSection = trimmed.slice(1, -1).trim();
-            continue;
-          }
+      const content = fs.readFileSync(configPath, 'utf-8');
+      const lines = content.split('\n');
+      const targetSection = targetProfile !== 'default' ? `profile ${targetProfile}` : 'default';
 
-          if (currentSection && currentSection.toLowerCase() === targetSection.toLowerCase()) {
-            const match = trimmed.match(/^region\s*=\s*(.+)$/i);
-            if (match && match[1]) {
-              const reg = match[1].trim().toLowerCase();
-              if (isValidAwsRegion(reg)) {
-                return reg;
-              }
+      let currentSection: string | null = null;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+          currentSection = trimmed.slice(1, -1).trim();
+          continue;
+        }
+
+        if (currentSection && currentSection.toLowerCase() === targetSection.toLowerCase()) {
+          const match = trimmed.match(/^region\s*=\s*(.+)$/i);
+          if (match && match[1]) {
+            const reg = match[1].trim().toLowerCase();
+            if (isValidAwsRegion(reg)) {
+              return reg;
             }
           }
         }
       }
     } catch {}
-
     return undefined;
+  }
+
+  /**
+   * Detects AWS region following standard precedence:
+   * 1. AWS_REGION
+   * 2. AWS_DEFAULT_REGION
+   * 3. Configured/target profile's region (or AWS_PROFILE if profile not explicitly specified)
+   * 4. default profile's region (only if AWS_PROFILE was not specified or was 'default')
+   */
+  public detectDefaultRegion(profile?: string): string | undefined {
+    // 1. AWS_REGION
+    if (process.env.AWS_REGION && isValidAwsRegion(process.env.AWS_REGION.trim())) {
+      return process.env.AWS_REGION.trim().toLowerCase();
+    }
+    // 2. AWS_DEFAULT_REGION
+    if (process.env.AWS_DEFAULT_REGION && isValidAwsRegion(process.env.AWS_DEFAULT_REGION.trim())) {
+      return process.env.AWS_DEFAULT_REGION.trim().toLowerCase();
+    }
+
+    // 3. Profile-based resolution
+    if (profile && profile.trim()) {
+      // Explicit profile provided (e.g. from Minfy config)
+      return this.readRegionFromAwsConfigFile(profile.trim());
+    }
+
+    // When no explicit Minfy profile is configured:
+    // Check AWS_PROFILE env var
+    const envProfile = process.env.AWS_PROFILE ? process.env.AWS_PROFILE.trim() : undefined;
+    if (envProfile) {
+      const envProfRegion = this.readRegionFromAwsConfigFile(envProfile);
+      if (envProfRegion) return envProfRegion;
+      // If AWS_PROFILE was explicitly specified but has no region, do NOT fall back to 'default' profile!
+      return undefined;
+    }
+
+    // 4. Fall back to 'default' profile
+    return this.readRegionFromAwsConfigFile('default');
   }
 
   /**
