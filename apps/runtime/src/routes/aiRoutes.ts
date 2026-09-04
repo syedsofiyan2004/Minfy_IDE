@@ -20,6 +20,7 @@ import { providerManifestService, assertValidProviderId } from '../services/ai/p
 import { ProviderFactory } from '../services/ai/providerFactory.js';
 import { bedrockConfigService } from '../services/ai/bedrock/bedrockConfigService.js';
 import { bedrockAdapter } from '../services/ai/bedrock/bedrockAdapter.js';
+import { codexAdapter } from '../services/ai/codex/codexAdapter.js';
 
 export const aiRouter = Router();
 
@@ -93,6 +94,13 @@ aiRouter.post('/providers/:id/connect', async (req: Request<{ id: string }, {}, 
     });
   }
 
+  if (providerId === 'codex') {
+    return res.status(400).json({
+      success: false,
+      error: 'OpenAI Codex uses ChatGPT account authentication. Sign in with ChatGPT instead of entering an API key.',
+    });
+  }
+
   const { apiKey } = req.body;
 
   if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
@@ -152,6 +160,13 @@ aiRouter.delete('/providers/:id/connection', async (req: Request<{ id: string }>
     });
   }
 
+  if (providerId === 'codex') {
+    return res.status(400).json({
+      success: false,
+      error: 'Codex authentication is managed by the local Codex CLI. Disconnecting does not delete machine-wide ChatGPT sessions.',
+    });
+  }
+
   await credentialStore.delete(providerId);
 
   return res.json({
@@ -159,6 +174,60 @@ aiRouter.delete('/providers/:id/connection', async (req: Request<{ id: string }>
     data: { connected: false },
     message: `Disconnected ${providerId} successfully`,
   });
+});
+
+// ==========================================
+// OpenAI Codex Authentication Endpoints (Milestone 7)
+// ==========================================
+
+// POST /api/ai/providers/codex/login
+aiRouter.post('/providers/codex/login', async (_req: Request, res: Response<ApiResponse<any>>) => {
+  try {
+    const loginResult = await codexAdapter.startLogin();
+    return res.json({
+      success: true,
+      data: loginResult,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to start ChatGPT login with Codex',
+    });
+  }
+});
+
+// GET /api/ai/providers/codex/login/:loginId
+aiRouter.get('/providers/codex/login/:loginId', async (req: Request<{ loginId: string }>, res: Response<ApiResponse<any>>) => {
+  const { loginId } = req.params;
+  try {
+    const status = await codexAdapter.getLoginStatus(loginId);
+    return res.json({
+      success: true,
+      data: status,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to check login status',
+    });
+  }
+});
+
+// POST /api/ai/providers/codex/login/:loginId/cancel
+aiRouter.post('/providers/codex/login/:loginId/cancel', async (req: Request<{ loginId: string }>, res: Response<ApiResponse<any>>) => {
+  const { loginId } = req.params;
+  try {
+    await codexAdapter.cancelLogin(loginId);
+    return res.json({
+      success: true,
+      data: { cancelled: true },
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to cancel login',
+    });
+  }
 });
 
 // ==========================================

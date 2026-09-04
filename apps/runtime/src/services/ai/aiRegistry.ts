@@ -10,6 +10,7 @@ import { AIProviderAdapter } from './types.js';
 import { OllamaAdapter } from './adapters/ollamaAdapter.js';
 import { OpenRouterAdapter } from './adapters/openRouterAdapter.js';
 import { bedrockAdapter } from './bedrock/bedrockAdapter.js';
+import { codexAdapter } from './codex/codexAdapter.js';
 import { ProviderFactory } from './providerFactory.js';
 import { providerManifestService, RESERVED_PROVIDER_IDS } from './providerManifestService.js';
 import { credentialStore } from '../credentialStore.js';
@@ -32,6 +33,8 @@ export class AIProviderRegistry {
     this.registerAdapter(new OpenRouterAdapter());
     // Register Milestone 6 enterprise AWS Bedrock adapter
     this.registerAdapter(bedrockAdapter);
+    // Register Milestone 7 OpenAI Codex App Server adapter
+    this.registerAdapter(codexAdapter);
   }
 
   public isBuiltIn(id: string): boolean {
@@ -104,12 +107,16 @@ export class AIProviderRegistry {
       const protocol = adapter.protocol || 'openai-compatible';
 
       try {
-        const { status, reason, modelsCount } = await adapter.getStatus();
+        const statusRes = await adapter.getStatus();
+        let status = statusRes.status;
+        const reason = statusRes.reason;
+        const modelsCount = statusRes.modelsCount;
         const requiresAuth = (adapter as any).requiresAuth ?? false;
         let connected = status === 'available';
         let authSource: string | undefined = undefined;
         let region: string | undefined = undefined;
         let profile: string | undefined = undefined;
+        let planType: string | undefined = undefined;
         let finalReason = reason;
 
         if (adapter.getConnectionState) {
@@ -118,6 +125,8 @@ export class AIProviderRegistry {
           authSource = conn.authSource;
           region = conn.region;
           profile = conn.profile;
+          planType = conn.planType;
+          if (conn.status) status = conn.status;
           if (conn.reason) finalReason = conn.reason;
         } else if (requiresAuth) {
           if (credentialStore.hasCredential(adapter.id)) {
@@ -140,6 +149,7 @@ export class AIProviderRegistry {
           authSource,
           region,
           profile,
+          planType,
           source,
           protocol,
         });

@@ -53,16 +53,22 @@ export const AIPanel: React.FC = () => {
   const [connectError, setConnectError] = useState<string | null>(null);
   const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
   const [isBedrockModalOpen, setIsBedrockModalOpen] = useState<boolean>(false);
+  const [isCodexLoggingIn, setIsCodexLoggingIn] = useState<boolean>(false);
 
   const activeProvider = providers.find((p) => p.id === selectedProvider);
   const isBedrock = activeProvider?.id === 'bedrock';
+  const isCodex = activeProvider?.id === 'codex';
   const requiresAuth = activeProvider?.requiresAuth ?? false;
   const isConnected = isBedrock
+    ? (activeProvider?.connected ?? false)
+    : isCodex
     ? (activeProvider?.connected ?? false)
     : requiresAuth
     ? (activeProvider?.connected ?? false)
     : true;
   const isAvailable = isBedrock
+    ? (activeProvider?.connected ?? false) && activeProvider?.status === 'available'
+    : isCodex
     ? (activeProvider?.connected ?? false) && activeProvider?.status === 'available'
     : (activeProvider?.status === 'available' || isConnected);
 
@@ -265,6 +271,41 @@ export const AIPanel: React.FC = () => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       handleSendPrompt();
+    }
+  };
+
+  const handleCodexLogin = async () => {
+    try {
+      setIsCodexLoggingIn(true);
+      const res = await api.startCodexLogin();
+      if (res.authUrl) {
+        window.open(res.authUrl, '_blank');
+      }
+
+      const startTime = Date.now();
+      const interval = setInterval(async () => {
+        try {
+          if (Date.now() - startTime > 5 * 60 * 1000) {
+            clearInterval(interval);
+            setIsCodexLoggingIn(false);
+            return;
+          }
+          const status = await api.getCodexLoginStatus(res.loginId);
+          if (status.status === 'completed') {
+            clearInterval(interval);
+            setIsCodexLoggingIn(false);
+            await loadProviders('codex');
+          } else if (status.status === 'failed') {
+            clearInterval(interval);
+            setIsCodexLoggingIn(false);
+          }
+        } catch {
+          clearInterval(interval);
+          setIsCodexLoggingIn(false);
+        }
+      }, 2000);
+    } catch {
+      setIsCodexLoggingIn(false);
     }
   };
 
@@ -535,7 +576,12 @@ export const AIPanel: React.FC = () => {
                 gap: '4px',
               }}
             >
-              {isBedrock ? (
+              {isCodex ? (
+                <>
+                  <Cloud size={10} color="#a6e3a1" />
+                  <span>Codex • ChatGPT account • Account usage limits apply</span>
+                </>
+              ) : isBedrock ? (
                 <>
                   <Cloud size={10} color="#ff9900" />
                   <span>AWS Bedrock • Remote inference • AWS-billed usage</span>
@@ -572,7 +618,71 @@ export const AIPanel: React.FC = () => {
           gap: '12px',
         }}
       >
-        {isBedrock && !isConnected ? (
+        {isCodex && !isConnected ? (
+          /* Codex Setup Card */
+          <div
+            style={{
+              padding: '16px 12px',
+              backgroundColor: 'var(--surface-1)',
+              borderRadius: '6px',
+              border: '1px solid var(--border-subtle)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Zap size={18} color="#a6e3a1" />
+              <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)' }}>
+                Sign in to Codex with ChatGPT
+              </div>
+            </div>
+
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+              Minfy connects to OpenAI Codex via the local Codex App Server and your ChatGPT account. No API keys or OAuth tokens are stored in Minfy.
+            </span>
+
+            {activeProvider?.statusReason && (
+              <div
+                style={{
+                  padding: '8px 10px',
+                  backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                  borderRadius: '4px',
+                  border: '1px solid rgba(248, 81, 73, 0.2)',
+                  color: 'var(--danger)',
+                  fontSize: '11px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                <AlertCircle size={14} style={{ flexShrink: 0 }} />
+                <span>{activeProvider.statusReason}</span>
+              </div>
+            )}
+
+            <button
+              onClick={handleCodexLogin}
+              disabled={isCodexLoggingIn}
+              style={{
+                padding: '8px 12px',
+                backgroundColor: 'rgba(166, 227, 161, 0.15)',
+                border: '1px solid rgba(166, 227, 161, 0.4)',
+                borderRadius: '4px',
+                color: '#a6e3a1',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px',
+              }}
+            >
+              <span>{isCodexLoggingIn ? 'Waiting for browser sign-in…' : 'Sign in with ChatGPT'}</span>
+            </button>
+          </div>
+        ) : isBedrock && !isConnected ? (
           /* Bedrock Setup Card */
           <div
             style={{

@@ -39,6 +39,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [isBedrockModalOpen, setIsBedrockModalOpen] = useState<boolean>(false);
+  const [codexLoggingIn, setCodexLoggingIn] = useState<boolean>(false);
 
   // Form fields
   const [name, setName] = useState<string>('');
@@ -209,22 +210,55 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
   const builtInProviders = providers.filter((p) => p.source === 'built-in' || p.id === 'ollama' || p.id === 'openrouter');
   const customProviders = providers.filter((p) => !builtInProviders.some((bp) => bp.id === p.id));
 
+  const handleCodexLogin = async () => {
+    try {
+      setCodexLoggingIn(true);
+      const res = await api.startCodexLogin();
+      if (res.authUrl) {
+        window.open(res.authUrl, '_blank');
+      }
+
+      const startTime = Date.now();
+      const interval = setInterval(async () => {
+        try {
+          if (Date.now() - startTime > 5 * 60 * 1000) {
+            clearInterval(interval);
+            setCodexLoggingIn(false);
+            return;
+          }
+          const status = await api.getCodexLoginStatus(res.loginId);
+          if (status.status === 'completed') {
+            clearInterval(interval);
+            setCodexLoggingIn(false);
+            await onRefresh('codex');
+          } else if (status.status === 'failed') {
+            clearInterval(interval);
+            setCodexLoggingIn(false);
+          }
+        } catch {
+          clearInterval(interval);
+          setCodexLoggingIn(false);
+        }
+      }, 2000);
+    } catch {
+      setCodexLoggingIn(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-[#181825] border border-[#313244] rounded-lg shadow-2xl w-full max-w-lg flex flex-col max-h-[85vh] overflow-hidden text-[#cdd6f4]">
+      <div className="w-full max-w-2xl bg-[#181825] border border-[#313244] rounded-lg shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#313244]">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#313244] bg-[#11111b]">
+          <div className="flex items-center gap-2.5">
             <Settings2 className="w-5 h-5 text-[#89b4fa]" />
             <h2 className="text-base font-semibold text-[#cdd6f4]">
-              {view === 'list' && 'AI Provider Management'}
-              {view === 'add' && 'Add Custom OpenAI-Compatible Provider'}
-              {view === 'edit' && `Edit Provider: ${editingManifest?.name}`}
+              AI Provider Manager
             </h2>
           </div>
           <button
             onClick={onClose}
-            className="text-[#a6adc8] hover:text-[#cdd6f4] p-1 rounded-md hover:bg-[#313244] transition-colors"
+            className="p-1 text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244] rounded transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
@@ -243,7 +277,12 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                 <div className="space-y-2">
                   {builtInProviders.map((prov) => {
                     const isBedrock = prov.id === 'bedrock';
-                    const description = isBedrock
+                    const isCodex = prov.id === 'codex';
+                    const description = isCodex
+                      ? prov.connected
+                        ? `Signed in with ChatGPT${prov.planType ? ` (${prov.planType.toUpperCase()})` : ''} • Account limits apply`
+                        : prov.statusReason || 'Sign in with ChatGPT required'
+                      : isBedrock
                       ? prov.connected
                         ? `Connected via AWS SDK (${prov.region || 'Region configured'})`
                         : prov.statusReason || 'AWS Region required'
@@ -292,6 +331,15 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                               className="px-2 py-0.5 text-[11px] font-medium text-[#89b4fa] bg-[#89b4fa]/10 hover:bg-[#89b4fa]/20 border border-[#89b4fa]/30 rounded transition-colors"
                             >
                               Configure
+                            </button>
+                          )}
+                          {isCodex && !prov.connected && (
+                            <button
+                              onClick={() => handleCodexLogin()}
+                              disabled={codexLoggingIn}
+                              className="px-2.5 py-1 text-[11px] font-medium text-[#a6e3a1] bg-[#a6e3a1]/10 hover:bg-[#a6e3a1]/20 border border-[#a6e3a1]/30 rounded transition-colors"
+                            >
+                              {codexLoggingIn ? 'Waiting...' : 'Sign in with ChatGPT'}
                             </button>
                           )}
                         </div>

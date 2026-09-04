@@ -18,6 +18,8 @@ import {
   ProviderManifestsResponse,
   BedrockConfig,
   BedrockTestResult,
+  CodexLoginStartResponse,
+  CodexLoginStatusResponse,
 } from '@minfy/shared';
 
 const API_BASE = '/api';
@@ -210,6 +212,22 @@ export const api = {
 
   testBedrockConnection: async (): Promise<BedrockTestResult> => {
     return fetchJson<BedrockTestResult>(`${API_BASE}/ai/providers/bedrock/test`, {
+      method: 'POST',
+    });
+  },
+
+  startCodexLogin: async (): Promise<CodexLoginStartResponse> => {
+    return fetchJson<CodexLoginStartResponse>(`${API_BASE}/ai/providers/codex/login`, {
+      method: 'POST',
+    });
+  },
+
+  getCodexLoginStatus: async (loginId: string): Promise<CodexLoginStatusResponse> => {
+    return fetchJson<CodexLoginStatusResponse>(`${API_BASE}/ai/providers/codex/login/${encodeURIComponent(loginId)}`);
+  },
+
+  cancelCodexLogin: async (loginId: string): Promise<{ cancelled: boolean }> => {
+    return fetchJson<{ cancelled: boolean }>(`${API_BASE}/ai/providers/codex/login/${encodeURIComponent(loginId)}/cancel`, {
       method: 'POST',
     });
   },

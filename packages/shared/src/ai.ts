@@ -57,6 +57,25 @@ export interface BedrockTestResult {
   reason?: string;
 }
 
+export interface CodexAccountInfo {
+  connected: boolean;
+  authMode?: 'chatgpt' | 'apiKey';
+  planType?: string;
+  error?: string;
+}
+
+export interface CodexLoginStartResponse {
+  loginId: string;
+  authUrl: string;
+  status: 'pending';
+}
+
+export interface CodexLoginStatusResponse {
+  loginId: string;
+  status: 'pending' | 'completed' | 'failed' | 'cancelled';
+  error?: string;
+}
+
 export interface AIProvider {
   id: string;
   name: string;
@@ -71,6 +90,7 @@ export interface AIProvider {
   authSource?: string;
   region?: string;
   profile?: string;
+  planType?: string;
   source?: ProviderManifestSource;
   protocol?: string;
 }

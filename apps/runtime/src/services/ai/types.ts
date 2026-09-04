@@ -33,5 +33,7 @@ export interface AIProviderAdapter {
     reason?: string;
     region?: string;
     profile?: string;
+    planType?: string;
+    status?: AIProviderStatus;
   }>;
 }
