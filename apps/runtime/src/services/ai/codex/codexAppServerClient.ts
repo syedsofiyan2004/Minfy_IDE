@@ -33,6 +33,9 @@ export class CodexAppServerClient extends EventEmitter {
   private pendingRequests: Map<string, PendingRequest> = new Map();
   private nextRequestId = 1;
   private isClosed = false;
+  private isInitialized = false;
+  private isInitializing = false;
+  private initPromise: Promise<CodexInitializeResponse> | null = null;
 
   constructor(stdin: Writable, stdout: Readable) {
     super();
@@ -116,25 +119,56 @@ export class CodexAppServerClient extends EventEmitter {
 
   /**
    * Handles server-initiated requests.
-   * In Milestone 7, Minfy MUST NOT grant mutation/execution approvals.
-   * Safely declines any approval request.
+   * In Milestone 7.1, Minfy strictly declines known mutation/execution approvals
+   * using the documented schema { decision: "decline" }, and returns JSON-RPC -32601
+   * method not found error for unknown server methods.
    */
   private handleServerInitiatedRequest(id: string, method: string, params: any): void {
-    // Safely deny command execution, file changes, permissions, or any host mutations
-    const declineResponse = {
-      id,
-      result: {
-        decision: 'decline',
-        status: 'denied',
-        reason: 'Host mutations and shell executions are not permitted in prompt-only mode.',
-      },
-    };
+    let response: any;
+
+    if (
+      method === 'item/commandExecution/requestApproval' ||
+      method === 'item/fileChange/requestApproval'
+    ) {
+      // Documented decline schema for command and file-change approvals
+      response = {
+        id,
+        result: {
+          decision: 'decline',
+        },
+      };
+      this.emit('serverRequestDeclined', { id, method, params, response });
+    } else {
+      // Unknown or unsupported server-initiated method
+      response = {
+        id,
+        error: {
+          code: -32601,
+          message: `Method not found: ${method}`,
+        },
+      };
+      this.emit('serverRequestUnsupported', { id, method, params, response });
+    }
 
     try {
-      this.stdin.write(JSON.stringify(declineResponse) + '\n');
+      this.stdin.write(JSON.stringify(response) + '\n');
     } catch {}
 
-    this.emit('serverRequestDenied', { id, method, params });
+    this.emit('serverRequestDenied', { id, method, params, response });
+  }
+
+  /**
+   * Sends a JSON-RPC notification (no id expected in return).
+   */
+  public sendNotification(method: string, params?: unknown): void {
+    if (this.isClosed) return;
+    const payload: { method: string; params?: unknown } = { method };
+    if (params !== undefined) {
+      payload.params = params;
+    }
+    try {
+      this.stdin.write(JSON.stringify(payload) + '\n');
+    } catch {}
   }
 
   /**
@@ -167,9 +201,9 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   /**
-   * Sends an RPC request to the Codex App Server and waits for the response.
+   * Low-level send request over stdio.
    */
-  public sendRequest<T>(method: string, params?: unknown, timeoutMs = 30000): Promise<T> {
+  private sendRequestInternal<T>(method: string, params?: unknown, timeoutMs = 30000): Promise<T> {
     if (this.isClosed) {
       return Promise.reject(new Error(`Cannot send request [${method}]: Codex App Server client is closed`));
     }
@@ -206,9 +240,37 @@ export class CodexAppServerClient extends EventEmitter {
     });
   }
 
+  /**
+   * Sends an RPC request to the Codex App Server and waits for the response.
+   * Enforces that initialization handshake must complete before any normal request is dispatched.
+   */
+  public async sendRequest<T>(method: string, params?: unknown, timeoutMs = 30000): Promise<T> {
+    if (this.isClosed) {
+      return Promise.reject(new Error(`Cannot send request [${method}]: Codex App Server client is closed`));
+    }
+
+    if (!this.isInitialized && method !== 'initialize') {
+      if (this.initPromise) {
+        await this.initPromise;
+      } else {
+        throw new Error(`Cannot send request [${method}]: Codex App Server handshake has not been performed`);
+      }
+    }
+
+    return this.sendRequestInternal<T>(method, params, timeoutMs);
+  }
+
   // --- High-level Typed RPC Methods ---
 
-  public initialize(clientInfo?: Partial<CodexInitializeParams['clientInfo']>): Promise<CodexInitializeResponse> {
+  public async initialize(clientInfo?: Partial<CodexInitializeParams['clientInfo']>): Promise<CodexInitializeResponse> {
+    if (this.isInitialized && this.initPromise) {
+      return this.initPromise;
+    }
+    if (this.isInitializing && this.initPromise) {
+      return this.initPromise;
+    }
+
+    this.isInitializing = true;
     const params: CodexInitializeParams = {
       clientInfo: {
         name: 'minfy',
@@ -218,7 +280,25 @@ export class CodexAppServerClient extends EventEmitter {
       },
       capabilities: null,
     };
-    return this.sendRequest<CodexInitializeResponse>('initialize', params, 10000);
+
+    this.initPromise = (async () => {
+      try {
+        const response = await this.sendRequestInternal<CodexInitializeResponse>('initialize', params, 10000);
+        // Protocol step: immediately emit {"method":"initialized"} notification
+        this.sendNotification('initialized');
+        this.isInitialized = true;
+        this.emit('ready', response);
+        return response;
+      } finally {
+        this.isInitializing = false;
+      }
+    })();
+
+    return this.initPromise;
+  }
+
+  public isReady(): boolean {
+    return this.isInitialized && !this.isClosed;
   }
 
   public getAccount(): Promise<CodexGetAccountResponse> {

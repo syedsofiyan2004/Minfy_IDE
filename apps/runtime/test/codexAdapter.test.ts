@@ -9,7 +9,7 @@ import { credentialStore } from '../src/services/credentialStore.js';
 import { aiProviderRegistry } from '../src/services/ai/aiRegistry.js';
 import { AIStreamEvent } from '@minfy/shared';
 
-describe('OpenAI Codex Adapter & Prompt Isolation (Milestone 7)', () => {
+describe('OpenAI Codex Adapter & Context Isolation (Milestones 7 & 7.1)', () => {
   let adapter: CodexAdapter;
   let stdin: PassThrough;
   let stdout: PassThrough;
@@ -19,6 +19,22 @@ describe('OpenAI Codex Adapter & Prompt Isolation (Milestone 7)', () => {
     stdin = new PassThrough();
     stdout = new PassThrough();
     mockClient = new CodexAppServerClient(stdin, stdout);
+
+    // Auto-respond to initialize handshake on mockClient
+    stdin.on('data', (chunk) => {
+      const lines = chunk
+        .toString()
+        .split('\n')
+        .filter((l: string) => l.trim());
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'initialize') {
+            stdout.write(JSON.stringify({ id: msg.id, result: { userAgent: 'codex-cli/0.151.0' } }) + '\n');
+          }
+        } catch {}
+      }
+    });
 
     codexRuntimeManager.setMockClient(mockClient);
 
@@ -38,87 +54,122 @@ describe('OpenAI Codex Adapter & Prompt Isolation (Milestone 7)', () => {
     mockClient.close();
   });
 
-  it('reports connected when ChatGPT account is authenticated and does not touch CredentialStore', async () => {
-    const connPromise = adapter.getConnectionState();
+  it('lazy process start correctly detects existing ChatGPT login without CredentialStore', async () => {
+    // Intercept account/read
+    stdin.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n').filter((l: string) => l.trim());
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'account/read') {
+            stdout.write(
+              JSON.stringify({
+                id: msg.id,
+                result: {
+                  account: {
+                    type: 'chatgpt',
+                    email: 'user@example.com',
+                    planType: 'plus',
+                  },
+                  requiresOpenaiAuth: true,
+                },
+              }) + '\n'
+            );
+          }
+        } catch {}
+      }
+    });
 
-    await new Promise((r) => setImmediate(r));
-
-    // Handle account/read
-    stdout.write(
-      JSON.stringify({
-        id: '1',
-        result: {
-          account: {
-            type: 'chatgpt',
-            email: 'user@example.com',
-            planType: 'plus',
-          },
-          requiresOpenaiAuth: true,
-        },
-      }) + '\n'
-    );
-
-    const conn = await connPromise;
+    const conn = await adapter.getConnectionState(true);
     assert.equal(conn.connected, true);
     assert.equal(conn.status, 'available');
     assert.match(conn.reason || '', /Signed in with ChatGPT \(PLUS\)/);
     assert.equal(conn.planType, 'plus');
 
-    // Verify CredentialStore was NOT used
+    // Verify CredentialStore was NOT touched
     assert.equal(credentialStore.hasCredential('codex'), false);
   });
 
-  it('reports unavailable when not signed in with ChatGPT', async () => {
-    const connPromise = adapter.getConnectionState();
+  it('truly signed-out account reports sign-in required', async () => {
+    stdin.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n').filter((l: string) => l.trim());
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'account/read') {
+            stdout.write(
+              JSON.stringify({
+                id: msg.id,
+                result: {
+                  account: null,
+                  requiresOpenaiAuth: true,
+                },
+              }) + '\n'
+            );
+          }
+        } catch {}
+      }
+    });
 
-    await new Promise((r) => setImmediate(r));
-
-    stdout.write(
-      JSON.stringify({
-        id: '1',
-        result: {
-          account: null,
-          requiresOpenaiAuth: true,
-        },
-      }) + '\n'
-    );
-
-    const conn = await connPromise;
+    const conn = await adapter.getConnectionState(true);
     assert.equal(conn.connected, false);
     assert.equal(conn.status, 'unavailable');
     assert.match(conn.reason || '', /Sign in with ChatGPT to use Codex/);
   });
 
+  it('startup failure differs clearly from signed-out state', async () => {
+    // Force runtime manager getClient to fail
+    codexRuntimeManager.setMockClient(null);
+    codexDiscoveryService.discover = async () => ({
+      available: true,
+      version: '0.151.0',
+      command: 'nonexistent-codex-binary-xyz',
+      baseArgs: [],
+    });
+
+    const conn = await adapter.getConnectionState(true);
+    assert.equal(conn.connected, false);
+    assert.equal(conn.status, 'unavailable');
+    assert.match(conn.reason || '', /Codex App Server could not be started/);
+    assert.doesNotMatch(conn.reason || '', /Sign in with ChatGPT/);
+  });
+
   it('dynamically normalizes models, filtering out hidden models and preserving cloud execution semantics', async () => {
-    const modelsPromise = adapter.listModels();
+    stdin.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n').filter((l: string) => l.trim());
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'model/list') {
+            stdout.write(
+              JSON.stringify({
+                id: msg.id,
+                result: {
+                  data: [
+                    {
+                      id: 'gpt-5.6-luna',
+                      displayName: 'GPT-5.6 Luna',
+                      hidden: false,
+                      isDefault: true,
+                      inputModalities: ['text', 'image'],
+                    },
+                    {
+                      id: 'gpt-5.4-deprecated',
+                      displayName: 'GPT-5.4 Hidden',
+                      hidden: true,
+                      isDefault: false,
+                    },
+                  ],
+                  nextCursor: null,
+                },
+              }) + '\n'
+            );
+          }
+        } catch {}
+      }
+    });
 
-    await new Promise((r) => setImmediate(r));
-
-    stdout.write(
-      JSON.stringify({
-        id: '1',
-        result: {
-          data: [
-            {
-              id: 'gpt-5.6-luna',
-              displayName: 'GPT-5.6 Luna',
-              hidden: false,
-              isDefault: true,
-              inputModalities: ['text', 'image'],
-            },
-            {
-              id: 'gpt-5.4-deprecated',
-              displayName: 'GPT-5.4 Hidden',
-              hidden: true,
-              isDefault: false,
-            },
-          ],
-          nextCursor: null,
-        },
-      }) + '\n'
-    );
-
-    const models = await modelsPromise;
+    const models = await adapter.listModels();
     assert.equal(models.length, 1);
     assert.equal(models[0].id, 'gpt-5.6-luna');
     assert.equal(models[0].providerId, 'codex');
@@ -128,7 +179,7 @@ describe('OpenAI Codex Adapter & Prompt Isolation (Milestone 7)', () => {
     assert.equal(models[0].supportsVision, true);
   });
 
-  it('CRITICAL PROMPT ISOLATION: thread/start uses isolated sandbox directory and never workspace path', async () => {
+  it('MINFY-PROVIDED CONTEXT ISOLATION: thread/start uses isolated sandbox directory and never workspace path', async () => {
     const events: AIStreamEvent[] = [];
     const workspaceRoot = 'C:\\Projects\\SecretEnterpriseRepo';
 
@@ -136,71 +187,65 @@ describe('OpenAI Codex Adapter & Prompt Isolation (Milestone 7)', () => {
     let capturedTurnStartParams: any = null;
 
     stdin.on('data', (chunk) => {
-      const lines = chunk
-        .toString()
-        .split('\n')
-        .filter((l: string) => l.trim());
-
+      const lines = chunk.toString().split('\n').filter((l: string) => l.trim());
       for (const line of lines) {
-        const msg = JSON.parse(line);
-        if (msg.method === 'account/read') {
-          stdout.write(
-            JSON.stringify({
-              id: msg.id,
-              result: {
-                account: { type: 'chatgpt', planType: 'team' },
-                requiresOpenaiAuth: true,
-              },
-            }) + '\n'
-          );
-        } else if (msg.method === 'thread/start') {
-          capturedThreadStartParams = msg.params;
-          stdout.write(
-            JSON.stringify({
-              id: msg.id,
-              result: {
-                thread: { id: 'thread-isolated-1' },
-                model: 'gpt-5.6-luna',
-                cwd: msg.params.cwd,
-              },
-            }) + '\n'
-          );
-        } else if (msg.method === 'turn/start') {
-          capturedTurnStartParams = msg.params;
-          stdout.write(
-            JSON.stringify({
-              id: msg.id,
-              result: {
-                turn: { id: 'turn-isolated-1', status: 'inProgress' },
-              },
-            }) + '\n'
-          );
-
-          // Emit text delta and completion
-          setTimeout(() => {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'account/read') {
             stdout.write(
               JSON.stringify({
-                method: 'item/agentMessage/delta',
-                params: {
-                  threadId: 'thread-isolated-1',
-                  turnId: 'turn-isolated-1',
-                  itemId: 'item-1',
-                  delta: 'Hello prompt world',
+                id: msg.id,
+                result: { account: { type: 'chatgpt', planType: 'team' }, requiresOpenaiAuth: true },
+              }) + '\n'
+            );
+          } else if (msg.method === 'thread/start') {
+            capturedThreadStartParams = msg.params;
+            stdout.write(
+              JSON.stringify({
+                id: msg.id,
+                result: {
+                  thread: { id: 'thread-isolated-1' },
+                  model: 'gpt-5.6-luna',
+                  cwd: msg.params.cwd,
+                },
+              }) + '\n'
+            );
+          } else if (msg.method === 'turn/start') {
+            capturedTurnStartParams = msg.params;
+            stdout.write(
+              JSON.stringify({
+                id: msg.id,
+                result: {
+                  turn: { id: 'turn-isolated-1', status: 'inProgress' },
                 },
               }) + '\n'
             );
 
-            stdout.write(
-              JSON.stringify({
-                method: 'turn/completed',
-                params: {
-                  threadId: 'thread-isolated-1',
-                  turn: { id: 'turn-isolated-1', status: 'completed' },
-                },
-              }) + '\n'
-            );
-          }, 10);
-        }
+            setTimeout(() => {
+              stdout.write(
+                JSON.stringify({
+                  method: 'item/agentMessage/delta',
+                  params: {
+                    threadId: 'thread-isolated-1',
+                    turnId: 'turn-isolated-1',
+                    itemId: 'item-1',
+                    delta: 'Hello prompt world',
+                  },
+                }) + '\n'
+              );
+
+              stdout.write(
+                JSON.stringify({
+                  method: 'turn/completed',
+                  params: {
+                    threadId: 'thread-isolated-1',
+                    turn: { id: 'turn-isolated-1', status: 'completed' },
+                  },
+                }) + '\n'
+              );
+            }, 10);
+          }
+        } catch {}
       }
     });
 
@@ -238,66 +283,93 @@ describe('OpenAI Codex Adapter & Prompt Isolation (Milestone 7)', () => {
     assert.equal(usage.status, 'completed');
   });
 
+  it('RACE GUARD: immediate turn completion in the same tick cannot be lost', async () => {
+    stdin.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n').filter((l: string) => l.trim());
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'account/read') {
+            stdout.write(JSON.stringify({ id: msg.id, result: { account: { type: 'chatgpt' } } }) + '\n');
+          } else if (msg.method === 'thread/start') {
+            stdout.write(JSON.stringify({ id: msg.id, result: { thread: { id: 'thread-race-1' } } }) + '\n');
+          } else if (msg.method === 'turn/start') {
+            // Write turn/start response AND turn/completed notification synchronously in the exact same write!
+            const batch =
+              JSON.stringify({ id: msg.id, result: { turn: { id: 'turn-race-1', status: 'inProgress' } } }) +
+              '\n' +
+              JSON.stringify({
+                method: 'item/agentMessage/delta',
+                params: { threadId: 'thread-race-1', turnId: 'turn-race-1', delta: 'Immediate answer' },
+              }) +
+              '\n' +
+              JSON.stringify({
+                method: 'turn/completed',
+                params: { threadId: 'thread-race-1', turn: { id: 'turn-race-1', status: 'completed' } },
+              }) +
+              '\n';
+            stdout.write(batch);
+          }
+        } catch {}
+      }
+    });
+
+    const events: AIStreamEvent[] = [];
+    const usagePromise = adapter.generate(
+      {
+        providerId: 'codex',
+        modelId: 'gpt-5.6-luna',
+        prompt: 'Immediate question',
+      },
+      (ev) => events.push(ev)
+    );
+
+    const usage = await usagePromise;
+    assert.equal(usage.status, 'completed');
+    assert.ok(events.some((e) => e.type === 'text-delta' && e.textDelta === 'Immediate answer'));
+    assert.ok(events.some((e) => e.type === 'completed'));
+  });
+
   it('sends turn/interrupt on cancellation and marks status as cancelled while keeping client alive', async () => {
     let interruptSent = false;
 
     stdin.on('data', (chunk) => {
-      const lines = chunk
-        .toString()
-        .split('\n')
-        .filter((l: string) => l.trim());
-
+      const lines = chunk.toString().split('\n').filter((l: string) => l.trim());
       for (const line of lines) {
-        const msg = JSON.parse(line);
-        if (msg.method === 'account/read') {
-          stdout.write(
-            JSON.stringify({
-              id: msg.id,
-              result: {
-                account: { type: 'chatgpt', planType: 'pro' },
-                requiresOpenaiAuth: true,
-              },
-            }) + '\n'
-          );
-        } else if (msg.method === 'thread/start') {
-          stdout.write(
-            JSON.stringify({
-              id: msg.id,
-              result: {
-                thread: { id: 'thread-cancel-1' },
-                model: 'gpt-5.6-luna',
-                cwd: '/tmp',
-              },
-            }) + '\n'
-          );
-        } else if (msg.method === 'turn/start') {
-          stdout.write(
-            JSON.stringify({
-              id: msg.id,
-              result: {
-                turn: { id: 'turn-cancel-1', status: 'inProgress' },
-              },
-            }) + '\n'
-          );
-        } else if (msg.method === 'turn/interrupt') {
-          interruptSent = true;
-          stdout.write(
-            JSON.stringify({
-              id: msg.id,
-              result: null,
-            }) + '\n'
-          );
-
-          stdout.write(
-            JSON.stringify({
-              method: 'turn/completed',
-              params: {
-                threadId: 'thread-cancel-1',
-                turn: { id: 'turn-cancel-1', status: 'interrupted' },
-              },
-            }) + '\n'
-          );
-        }
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'account/read') {
+            stdout.write(
+              JSON.stringify({
+                id: msg.id,
+                result: { account: { type: 'chatgpt', planType: 'pro' }, requiresOpenaiAuth: true },
+              }) + '\n'
+            );
+          } else if (msg.method === 'thread/start') {
+            stdout.write(
+              JSON.stringify({
+                id: msg.id,
+                result: { thread: { id: 'thread-cancel-1' }, model: 'gpt-5.6-luna', cwd: '/tmp' },
+              }) + '\n'
+            );
+          } else if (msg.method === 'turn/start') {
+            stdout.write(
+              JSON.stringify({
+                id: msg.id,
+                result: { turn: { id: 'turn-cancel-1', status: 'inProgress' } },
+              }) + '\n'
+            );
+          } else if (msg.method === 'turn/interrupt') {
+            interruptSent = true;
+            stdout.write(JSON.stringify({ id: msg.id, result: null }) + '\n');
+            stdout.write(
+              JSON.stringify({
+                method: 'turn/completed',
+                params: { threadId: 'thread-cancel-1', turn: { id: 'turn-cancel-1', status: 'interrupted' } },
+              }) + '\n'
+            );
+          }
+        } catch {}
       }
     });
 
@@ -313,7 +385,6 @@ describe('OpenAI Codex Adapter & Prompt Isolation (Milestone 7)', () => {
     );
 
     await new Promise((r) => setTimeout(r, 20));
-
     abortCtrl.abort();
 
     const usage = await genPromise;

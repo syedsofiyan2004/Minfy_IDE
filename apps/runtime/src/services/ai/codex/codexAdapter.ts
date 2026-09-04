@@ -54,56 +54,68 @@ export class CodexAdapter implements AIProviderAdapter {
     }
   }
 
-  public async getStatus(): Promise<{ status: AIProviderStatus; reason?: string; modelsCount?: number }> {
-    const discovery = await codexDiscoveryService.discover();
-    if (!discovery.available) {
-      return {
-        status: 'unavailable',
-        reason: discovery.reason || 'Codex runtime not found. Install the official Codex CLI, then refresh Minfy.',
-      };
-    }
+  private cachedConnectionState: {
+    state: {
+      connected: boolean;
+      status: AIProviderStatus;
+      reason?: string;
+      statusReason?: string;
+      planType?: string;
+    };
+    timestamp: number;
+  } | null = null;
+  private readonly CACHE_TTL_MS = 15000;
 
-    if (!codexRuntimeManager.isRunning()) {
-      return {
-        status: 'unavailable',
-        reason: 'Sign in with ChatGPT to use Codex.',
-      };
-    }
+  /**
+   * Invalidates cached connection state (e.g. after login or logout).
+   */
+  public invalidateStatusCache(): void {
+    this.cachedConnectionState = null;
+  }
 
-    const conn = await this.getConnectionState();
+  public async getStatus(explicit = false): Promise<{ status: AIProviderStatus; reason?: string; modelsCount?: number }> {
+    const conn = await this.getConnectionState(explicit);
     return {
       status: conn.status || (conn.connected ? 'available' : 'unavailable'),
       reason: conn.reason || conn.statusReason,
     };
   }
 
-  public async getConnectionState(startIfStopped = false): Promise<{
+  public async getConnectionState(explicit = false): Promise<{
     connected: boolean;
     status: AIProviderStatus;
     reason?: string;
     statusReason?: string;
     planType?: string;
   }> {
+    if (!explicit && this.cachedConnectionState && Date.now() - this.cachedConnectionState.timestamp < this.CACHE_TTL_MS) {
+      return this.cachedConnectionState.state;
+    }
+
     const discovery = await codexDiscoveryService.discover();
     if (!discovery.available) {
-      return {
+      const state = {
         connected: false,
-        status: 'unavailable',
+        status: 'unavailable' as AIProviderStatus,
         reason: discovery.reason || 'Codex runtime not found. Install the official Codex CLI, then refresh Minfy.',
         statusReason: discovery.reason || 'Codex runtime not found. Install the official Codex CLI, then refresh Minfy.',
       };
+      this.cachedConnectionState = { state, timestamp: Date.now() };
+      return state;
     }
 
-    if (!codexRuntimeManager.isRunning() && !startIfStopped) {
+    // Lazy startup: do not globally start Codex during Minfy Runtime boot if Codex is never used.
+    if (!codexRuntimeManager.isRunning() && !explicit) {
       return {
         connected: false,
-        status: 'unavailable',
+        status: 'unavailable' as AIProviderStatus,
         reason: 'Sign in with ChatGPT to use Codex.',
         statusReason: 'Sign in with ChatGPT to use Codex.',
       };
     }
 
     try {
+      // Lazily start or obtain the App Server client
       const client = await codexRuntimeManager.getClient();
       const accountRes = await client.getAccount();
 
@@ -112,29 +124,36 @@ export class CodexAdapter implements AIProviderAdapter {
         const plan = typeof chatgptAcc.planType === 'string' ? chatgptAcc.planType : undefined;
         const planLabel = plan && plan !== 'unknown' ? ` (${plan.toUpperCase()})` : '';
         const msg = `Signed in with ChatGPT${planLabel}. Account usage limits apply.`;
-        return {
+        const state = {
           connected: true,
-          status: 'available',
+          status: 'available' as AIProviderStatus,
           reason: msg,
           statusReason: msg,
           planType: plan,
         };
+        this.cachedConnectionState = { state, timestamp: Date.now() };
+        return state;
       }
 
-      return {
+      const state = {
         connected: false,
-        status: 'unavailable',
+        status: 'unavailable' as AIProviderStatus,
         reason: 'Sign in with ChatGPT to use Codex.',
         statusReason: 'Sign in with ChatGPT to use Codex.',
       };
+      this.cachedConnectionState = { state, timestamp: Date.now() };
+      return state;
     } catch (err: any) {
-      const msg = `Codex App Server error: ${err?.message || err}`;
-      return {
+      const msg = `Codex App Server could not be started: ${err?.message || err}`;
+      const state = {
         connected: false,
-        status: 'unavailable',
+        status: 'unavailable' as AIProviderStatus,
         reason: msg,
         statusReason: msg,
       };
+      // Keep short failure cache
+      this.cachedConnectionState = { state, timestamp: Date.now() };
+      return state;
     }
   }
 
@@ -147,20 +166,30 @@ export class CodexAdapter implements AIProviderAdapter {
     try {
       const client = await codexRuntimeManager.getClient();
       const res = await client.listModels();
-      const rawModels = res.data || [];
 
-      return rawModels
-        .filter((m) => !m.hidden)
-        .map((m) => ({
-          id: m.id,
-          providerId: this.id,
-          displayName: m.displayName || m.model || m.id,
-          executionLocation: 'cloud' as const,
-          billingType: 'unknown' as const,
-          supportsStreaming: true,
-          supportsVision: m.inputModalities?.includes('image') ?? false,
-          supportsTools: false, // Prompt-only in Milestone 7
-        }));
+      if (!res.data || !Array.isArray(res.data)) {
+        return [];
+      }
+
+      return res.data
+        .filter((rawModel) => !rawModel.hidden)
+        .map((rawModel) => {
+          const supportsVision =
+            Array.isArray(rawModel.inputModalities) &&
+            rawModel.inputModalities.includes('image');
+
+          return {
+            id: rawModel.id,
+            displayName: rawModel.displayName || rawModel.id,
+            providerId: this.id,
+            executionLocation: 'cloud',
+            billingType: 'unknown',
+            supportsStreaming: true,
+            supportsVision,
+            isDefault: Boolean(rawModel.isDefault),
+            costDescription: 'Codex via ChatGPT account. Account usage limits apply.',
+          };
+        });
     } catch (err) {
       return [];
     }
@@ -171,17 +200,11 @@ export class CodexAdapter implements AIProviderAdapter {
     onEvent: (event: AIStreamEvent) => void,
     signal?: AbortSignal
   ): Promise<AIUsage> {
-    this.ensureSandboxDirectory();
-
     const client = await codexRuntimeManager.getClient();
 
-    // 1. Check account authentication
-    const accountRes = await client.getAccount();
-    if (!accountRes.account || accountRes.account.type !== 'chatgpt') {
-      throw new Error('Codex is not connected. Sign in with ChatGPT to use Codex.');
-    }
+    this.ensureSandboxDirectory();
 
-    // 2. Start ephemeral isolated thread in private prompt sandbox
+    // 1. Start thread with Minfy-provided context isolation
     const threadRes = await client.startThread({
       cwd: this.sandboxDirectory,
       sandbox: 'read-only',
@@ -196,19 +219,9 @@ export class CodexAdapter implements AIProviderAdapter {
     const startedAt = new Date().toISOString();
     const startTime = Date.now();
 
-    // 3. Start turn
-    const turnRes = await client.startTurn({
-      threadId,
-      input: [{ type: 'text', text: request.prompt, text_elements: [] }],
-      cwd: this.sandboxDirectory,
-      model: request.modelId,
-    });
-
-    const turnId = turnRes.turn.id;
-
     const turnContext: ActiveTurnContext = {
       threadId,
-      turnId,
+      turnId: '',
       accumulatedText: '',
       startedAt,
       startTime,
@@ -218,9 +231,12 @@ export class CodexAdapter implements AIProviderAdapter {
     onEvent({ type: 'started' });
 
     // Handle AbortSignal cancellation
+    let activeTurnId: string | null = null;
     const abortHandler = async () => {
       try {
-        await client.interruptTurn({ threadId, turnId });
+        if (activeTurnId) {
+          await client.interruptTurn({ threadId, turnId: activeTurnId });
+        }
       } catch {}
     };
 
@@ -234,6 +250,7 @@ export class CodexAdapter implements AIProviderAdapter {
 
     return new Promise<AIUsage>((resolve, reject) => {
       let isResolved = false;
+      let earlyCompletedParams: CodexTurnCompletedParams | null = null;
 
       const finishTurn = (status: 'completed' | 'cancelled' | 'error', errorMsg?: string) => {
         if (isResolved) return;
@@ -260,7 +277,7 @@ export class CodexAdapter implements AIProviderAdapter {
           inputTokenCount: turnContext.tokens?.input,
           outputTokenCount: turnContext.tokens?.output,
           status,
-          costDescription: 'Codex via ChatGPT account. Account usage limits apply.',
+          costDescription: 'Codex via ChatGPT account. Minfy-provided context isolation active. Account usage limits apply.',
         };
 
         this.activeTurns.delete(threadId);
@@ -274,15 +291,16 @@ export class CodexAdapter implements AIProviderAdapter {
         }
       };
 
+      // Register listeners BEFORE startTurn to eliminate any race condition
       const deltaListener = (params: CodexAgentMessageDeltaParams) => {
-        if (params.threadId === threadId && params.turnId === turnId && params.delta) {
+        if (params.threadId === threadId && (!activeTurnId || params.turnId === activeTurnId) && params.delta) {
           turnContext.accumulatedText += params.delta;
           onEvent({ type: 'text-delta', textDelta: params.delta });
         }
       };
 
       const tokenListener = (params: CodexThreadTokenUsageUpdatedParams) => {
-        if (params.threadId === threadId && params.turnId === turnId) {
+        if (params.threadId === threadId && (!activeTurnId || params.turnId === activeTurnId)) {
           const breakdown = params.tokenUsage?.last || params.tokenUsage?.total;
           if (breakdown) {
             turnContext.tokens = {
@@ -294,7 +312,12 @@ export class CodexAdapter implements AIProviderAdapter {
       };
 
       const completedListener = (params: CodexTurnCompletedParams) => {
-        if (params.threadId === threadId && params.turn.id === turnId) {
+        if (params.threadId === threadId && (!activeTurnId || params.turn.id === activeTurnId)) {
+          if (!activeTurnId) {
+            // Arrived in the same tick before startTurn promise resolved
+            earlyCompletedParams = params;
+            return;
+          }
           const status = params.turn.status;
           if (status === 'completed') {
             finishTurn('completed');
@@ -308,8 +331,42 @@ export class CodexAdapter implements AIProviderAdapter {
       };
 
       client.on('agentMessageDelta', deltaListener);
-      client.on('turnCompleted', completedListener);
       client.on('tokenUsageUpdated', tokenListener);
+      client.on('turnCompleted', completedListener);
+
+      // Now dispatch startTurn
+      client
+        .startTurn({
+          threadId,
+          input: [{ type: 'text', text: request.prompt, text_elements: [] }],
+          cwd: this.sandboxDirectory,
+          model: request.modelId,
+          sandboxPolicy: { type: 'readOnly', networkAccess: false },
+        })
+        .then((turnRes) => {
+          activeTurnId = turnRes.turn.id;
+          turnContext.turnId = activeTurnId;
+
+          if (signal?.aborted) {
+            abortHandler();
+          }
+
+          // If turnCompleted notification arrived before startTurn returned:
+          if (earlyCompletedParams) {
+            const status = earlyCompletedParams.turn.status;
+            if (status === 'completed') {
+              finishTurn('completed');
+            } else if (status === 'interrupted') {
+              finishTurn('cancelled');
+            } else {
+              const err = earlyCompletedParams.turn.error?.message || 'Codex turn failed';
+              finishTurn('error', err);
+            }
+          }
+        })
+        .catch((err) => {
+          finishTurn('error', err?.message || 'Failed to start turn');
+        });
     });
   }
 
@@ -346,6 +403,7 @@ export class CodexAdapter implements AIProviderAdapter {
     const res = await client.startLogin();
 
     codexRuntimeManager.registerLoginSession(res.loginId, res.authUrl);
+    this.invalidateStatusCache();
 
     return {
       loginId: res.loginId,
@@ -362,6 +420,7 @@ export class CodexAdapter implements AIProviderAdapter {
         const client = await codexRuntimeManager.getClient();
         const acc = await client.getAccount();
         if (acc.account && acc.account.type === 'chatgpt') {
+          this.invalidateStatusCache();
           return { loginId, status: 'completed' };
         }
       } catch {}
@@ -369,6 +428,7 @@ export class CodexAdapter implements AIProviderAdapter {
     }
 
     if (session.status === 'completed') {
+      this.invalidateStatusCache();
       return { loginId, status: 'completed' };
     }
 
@@ -380,6 +440,7 @@ export class CodexAdapter implements AIProviderAdapter {
   }
 
   public async cancelLogin(loginId: string): Promise<void> {
+    this.invalidateStatusCache();
     codexRuntimeManager.cancelLoginSession(loginId);
     try {
       const client = await codexRuntimeManager.getClient();

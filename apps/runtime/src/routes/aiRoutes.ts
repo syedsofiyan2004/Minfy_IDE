@@ -230,6 +230,22 @@ aiRouter.post('/providers/codex/login/:loginId/cancel', async (req: Request<{ lo
   }
 });
 
+// GET /api/ai/providers/codex/status - Explicit Codex status query (lazily starts App Server and performs account/read)
+aiRouter.get('/providers/codex/status', async (_req: Request, res: Response<ApiResponse<any>>) => {
+  try {
+    const conn = await codexAdapter.getConnectionState(true);
+    return res.json({
+      success: true,
+      data: conn,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to query Codex status',
+    });
+  }
+});
+
 // ==========================================
 // AWS Bedrock Configuration Endpoints (Milestone 6)
 // ==========================================

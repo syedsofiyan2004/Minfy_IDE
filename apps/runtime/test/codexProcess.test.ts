@@ -58,7 +58,83 @@ describe('OpenAI Codex Process Lifecycle & Stdio JSONL Protocol (Milestone 7)', 
     assert.equal(res.platformFamily, 'unix');
   });
 
-  it('handles multiple concurrent requests and correlates responses accurately', async () => {
+  it('enforces exact protocol handshake order: initialize -> response -> initialized notification -> account/read', async () => {
+    const sentLines: string[] = [];
+    stdin.on('data', (chunk) => {
+      const lines = chunk
+        .toString()
+        .split('\n')
+        .filter((l: string) => l.trim());
+      sentLines.push(...lines);
+    });
+
+    // Start initialization
+    const initPromise = client.initialize({ name: 'minfy-test' });
+
+    // Concurrently trigger account/read before initialization is answered
+    const accountPromise = client.getAccount();
+
+    await new Promise((r) => setImmediate(r));
+
+    // At this point, ONLY initialize request should have been sent over stdio
+    assert.equal(sentLines.length, 1, 'Only initialize request should be sent before handshake completes');
+    const firstReq = JSON.parse(sentLines[0]);
+    assert.equal(firstReq.method, 'initialize');
+    assert.equal(firstReq.id, '1');
+
+    // Simulate server returning initialize response
+    stdout.write(
+      JSON.stringify({
+        id: '1',
+        result: { userAgent: 'codex-cli/0.151.0' },
+      }) + '\n'
+    );
+
+    // Allow event loop to process response and send initialized notification + queued account/read
+    await new Promise((r) => setImmediate(r));
+
+    await initPromise;
+
+    // Now sentLines should contain:
+    // [0] {"id":"1","method":"initialize",...}
+    // [1] {"method":"initialized"}
+    // [2] {"id":"2","method":"account/read",...}
+    assert.equal(sentLines.length, 3);
+    const notification = JSON.parse(sentLines[1]);
+    assert.equal(notification.method, 'initialized');
+    assert.equal(notification.id, undefined, 'initialized must be a notification without id');
+
+    const accountReq = JSON.parse(sentLines[2]);
+    assert.equal(accountReq.method, 'account/read');
+    assert.equal(accountReq.id, '2');
+
+    // Respond to account/read
+    stdout.write(
+      JSON.stringify({
+        id: '2',
+        result: { account: { type: 'chatgpt', planType: 'plus' }, requiresOpenaiAuth: true },
+      }) + '\n'
+    );
+
+    const acc = await accountPromise;
+    assert.equal(acc.account?.type, 'chatgpt');
+    assert.equal(client.isReady(), true);
+  });
+
+  it('rejects request immediately if handshake was never initiated', async () => {
+    await assert.rejects(
+      client.getAccount(),
+      /Codex App Server handshake has not been performed/
+    );
+  });
+
+  it('handles multiple concurrent requests after handshake', async () => {
+    // Perform handshake
+    const initP = client.initialize();
+    await new Promise((r) => setImmediate(r));
+    stdout.write(JSON.stringify({ id: '1', result: {} }) + '\n');
+    await initP;
+
     const req1 = client.getAccount();
     const req2 = client.listModels();
 
@@ -74,17 +150,17 @@ describe('OpenAI Codex Process Lifecycle & Stdio JSONL Protocol (Milestone 7)', 
 
     await new Promise((r) => setImmediate(r));
 
-    // Respond out of order: req 2 first, then req 1
+    // Respond out of order: req 3 (listModels) first, then req 2 (getAccount)
     stdout.write(
       JSON.stringify({
-        id: '2',
+        id: '3',
         result: { data: [{ id: 'gpt-5.6-luna', displayName: 'GPT 5.6 Luna', hidden: false, isDefault: true }], nextCursor: null },
       }) + '\n'
     );
 
     stdout.write(
       JSON.stringify({
-        id: '1',
+        id: '2',
         result: { account: { type: 'chatgpt', planType: 'plus', email: null }, requiresOpenaiAuth: true },
       }) + '\n'
     );
@@ -95,6 +171,11 @@ describe('OpenAI Codex Process Lifecycle & Stdio JSONL Protocol (Milestone 7)', 
   });
 
   it('malformed JSON line does not crash client or reject valid requests', async () => {
+    const initP = client.initialize();
+    await new Promise((r) => setImmediate(r));
+    stdout.write(JSON.stringify({ id: '1', result: {} }) + '\n');
+    await initP;
+
     const req = client.getAccount();
 
     await new Promise((r) => setImmediate(r));
@@ -107,7 +188,7 @@ describe('OpenAI Codex Process Lifecycle & Stdio JSONL Protocol (Milestone 7)', 
     // Feed valid response
     stdout.write(
       JSON.stringify({
-        id: '1',
+        id: '2',
         result: { account: null, requiresOpenaiAuth: true },
       }) + '\n'
     );
@@ -116,21 +197,21 @@ describe('OpenAI Codex Process Lifecycle & Stdio JSONL Protocol (Milestone 7)', 
     assert.equal(res.account, null);
   });
 
-  it('safely denies server-initiated approval requests for command execution and file mutation', async () => {
+  it('safely declines command execution approval with exact documented schema', async () => {
     let responseSent = '';
     stdin.on('data', (chunk) => {
       responseSent += chunk.toString();
     });
 
-    let deniedEvent: any = null;
-    client.on('serverRequestDenied', (e) => {
-      deniedEvent = e;
+    let declinedEvent: any = null;
+    client.on('serverRequestDeclined', (e) => {
+      declinedEvent = e;
     });
 
-    // Server sends an approval request
+    // Server sends command approval request
     stdout.write(
       JSON.stringify({
-        id: 'server-req-42',
+        id: 'server-cmd-1',
         method: 'item/commandExecution/requestApproval',
         params: { command: 'rm -rf /' },
       }) + '\n'
@@ -138,15 +219,80 @@ describe('OpenAI Codex Process Lifecycle & Stdio JSONL Protocol (Milestone 7)', 
 
     await new Promise((r) => setImmediate(r));
 
-    assert.ok(deniedEvent);
-    assert.equal(deniedEvent.id, 'server-req-42');
+    assert.ok(declinedEvent);
+    assert.equal(declinedEvent.id, 'server-cmd-1');
 
     const sentJson = JSON.parse(responseSent.trim());
-    assert.equal(sentJson.id, 'server-req-42');
-    assert.equal(sentJson.result.decision, 'decline');
+    assert.equal(sentJson.id, 'server-cmd-1');
+    assert.deepEqual(sentJson.result, { decision: 'decline' });
+  });
+
+  it('safely declines file change approval with exact documented schema', async () => {
+    let responseSent = '';
+    stdin.on('data', (chunk) => {
+      responseSent += chunk.toString();
+    });
+
+    let declinedEvent: any = null;
+    client.on('serverRequestDeclined', (e) => {
+      declinedEvent = e;
+    });
+
+    // Server sends file change approval request
+    stdout.write(
+      JSON.stringify({
+        id: 'server-file-1',
+        method: 'item/fileChange/requestApproval',
+        params: { path: '/etc/hosts', patch: '...' },
+      }) + '\n'
+    );
+
+    await new Promise((r) => setImmediate(r));
+
+    assert.ok(declinedEvent);
+    assert.equal(declinedEvent.id, 'server-file-1');
+
+    const sentJson = JSON.parse(responseSent.trim());
+    assert.equal(sentJson.id, 'server-file-1');
+    assert.deepEqual(sentJson.result, { decision: 'decline' });
+  });
+
+  it('responds with standard JSON-RPC method-not-found error for unknown server-initiated requests', async () => {
+    let responseSent = '';
+    stdin.on('data', (chunk) => {
+      responseSent += chunk.toString();
+    });
+
+    let unsupportedEvent: any = null;
+    client.on('serverRequestUnsupported', (e) => {
+      unsupportedEvent = e;
+    });
+
+    stdout.write(
+      JSON.stringify({
+        id: 'unknown-req-99',
+        method: 'experimental/mcpElicitation',
+        params: {},
+      }) + '\n'
+    );
+
+    await new Promise((r) => setImmediate(r));
+
+    assert.ok(unsupportedEvent);
+    assert.equal(unsupportedEvent.id, 'unknown-req-99');
+
+    const sentJson = JSON.parse(responseSent.trim());
+    assert.equal(sentJson.id, 'unknown-req-99');
+    assert.equal(sentJson.error.code, -32601);
+    assert.match(sentJson.error.message, /Method not found/);
   });
 
   it('rejects pending requests cleanly when connection closes', async () => {
+    const initP = client.initialize();
+    await new Promise((r) => setImmediate(r));
+    stdout.write(JSON.stringify({ id: '1', result: {} }) + '\n');
+    await initP;
+
     const req = client.getAccount();
     await new Promise((r) => setImmediate(r));
 

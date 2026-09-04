@@ -45,6 +45,9 @@ export class CodexRuntimeManager {
    */
   public async getClient(): Promise<CodexAppServerClient> {
     if (this.mockClient) {
+      if (!this.mockClient.isReady()) {
+        await this.mockClient.initialize();
+      }
       return this.mockClient;
     }
 
@@ -110,6 +113,12 @@ export class CodexRuntimeManager {
 
     const client = new CodexAppServerClient(child.stdin!, child.stdout!);
     this.client = client;
+
+    // Unref child process so it does not block Node event loop
+    child.unref();
+    if ((child.stdin as any)?.unref) (child.stdin as any).unref();
+    if ((child.stdout as any)?.unref) (child.stdout as any).unref();
+    if ((child.stderr as any)?.unref) (child.stderr as any).unref();
 
     // Attach exit listener
     child.on('exit', (code, signal) => {

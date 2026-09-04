@@ -111,6 +111,8 @@ export interface CodexTurnStartParams {
   input: CodexUserInputText[];
   cwd?: string | null;
   model?: string | null;
+  approvalPolicy?: 'never' | 'on-request' | 'untrusted' | null;
+  sandboxPolicy?: { type: 'readOnly'; networkAccess: boolean } | { type: 'dangerFullAccess' } | null;
 }
 
 export interface CodexTurnError {
