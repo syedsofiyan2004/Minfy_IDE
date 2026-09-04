@@ -76,25 +76,61 @@ export const AIPanel: React.FC = () => {
   const isLocalExecution = currentModel ? currentModel.executionLocation === 'local' : selectedProvider === 'ollama';
   const isFreeModel = currentModel ? currentModel.billingType === 'free' : false;
 
+  // Helper to resolve truthful Codex status
+  const resolveCodexStatus = async () => {
+    try {
+      const statusRes = await api.getCodexStatus();
+      setProviders((prev) =>
+        prev.map((p) =>
+          p.id === 'codex'
+            ? {
+                ...p,
+                connected: statusRes.connected,
+                status: statusRes.status,
+                statusReason: statusRes.reason || statusRes.statusReason,
+                planType: statusRes.planType,
+              }
+            : p
+        )
+      );
+      return statusRes;
+    } catch (err) {
+      console.warn('Failed to resolve Codex status:', err);
+      return null;
+    }
+  };
+
   // Load providers on mount
   const loadProviders = async (targetProviderId?: string) => {
     try {
       setLoadingProviders(true);
       const res = await api.listAIProviders();
-      setProviders(res.providers);
-      if (res.credentialBackendName) {
-        setCredentialBackendName(res.credentialBackendName);
-      }
+      let currentProviders = res.providers;
 
       const targetId = targetProviderId || selectedProvider;
-      const validProv = res.providers.some((p) => p.id === targetId)
+      const validProv = currentProviders.some((p) => p.id === targetId)
         ? targetId
-        : res.providers[0]?.id || 'ollama';
+        : currentProviders[0]?.id || 'ollama';
 
       setSelectedProvider(validProv);
       localStorage.setItem('minfy_ai_provider', validProv);
 
-      await loadModels(validProv);
+      if (res.credentialBackendName) {
+        setCredentialBackendName(res.credentialBackendName);
+      }
+
+      if (validProv === 'codex') {
+        const codexStatus = await resolveCodexStatus();
+        if (codexStatus?.connected) {
+          await loadModels('codex');
+        } else {
+          setModels([]);
+          setSelectedModel('');
+        }
+      } else {
+        setProviders(currentProviders);
+        await loadModels(validProv);
+      }
     } catch {
       // Ignore network failure
     } finally {
@@ -131,7 +167,18 @@ export const AIPanel: React.FC = () => {
     localStorage.setItem('minfy_ai_provider', providerId);
     setConnectError(null);
     setApiKeyInput('');
-    await loadModels(providerId);
+
+    if (providerId === 'codex') {
+      const codexStatus = await resolveCodexStatus();
+      if (codexStatus?.connected) {
+        await loadModels('codex');
+      } else {
+        setModels([]);
+        setSelectedModel('');
+      }
+    } else {
+      await loadModels(providerId);
+    }
   };
 
   const handleSelectModel = (modelId: string) => {

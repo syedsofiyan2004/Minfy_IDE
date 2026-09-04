@@ -76,6 +76,14 @@ export interface CodexLoginStatusResponse {
   error?: string;
 }
 
+export interface CodexStatusResponse {
+  connected: boolean;
+  status: AIProviderStatus;
+  reason?: string;
+  statusReason?: string;
+  planType?: string;
+}
+
 export interface AIProvider {
   id: string;
   name: string;

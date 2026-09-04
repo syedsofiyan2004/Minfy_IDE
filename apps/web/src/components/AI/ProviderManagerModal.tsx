@@ -70,6 +70,9 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
       setView('list');
       setDeletingId(null);
       setFormError(null);
+      api.getCodexStatus()
+        .then(() => onRefresh('codex'))
+        .catch(() => {});
     }
   }, [isOpen]);
 

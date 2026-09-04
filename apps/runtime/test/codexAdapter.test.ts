@@ -409,4 +409,46 @@ describe('OpenAI Codex Adapter & Context Isolation (Milestones 7 & 7.1)', () => 
     assert.equal(codex.type, 'subscription');
     assert.equal(aiProviderRegistry.isBuiltIn('codex'), true);
   });
+
+  it('TRUTHFUL UI STATUS (Milestone 7.1.1): non-explicit query preserves lazy start while explicit query yields live account plan', async () => {
+    // 1. Inactive/non-explicit query when not running does not start process
+    codexRuntimeManager.setMockClient(null);
+    assert.equal(codexRuntimeManager.isRunning(), false);
+
+    const idleConn = await adapter.getConnectionState(false);
+    assert.equal(idleConn.connected, false);
+    assert.equal(codexRuntimeManager.isRunning(), false);
+
+    // 2. Explicit query lazily starts App Server and retrieves truthful login info
+    codexRuntimeManager.setMockClient(mockClient);
+    stdin.on('data', (chunk) => {
+      const lines = chunk.toString().split('\n').filter((l: string) => l.trim());
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.method === 'account/read') {
+            stdout.write(
+              JSON.stringify({
+                id: msg.id,
+                result: {
+                  account: {
+                    type: 'chatgpt',
+                    email: 'user@example.com',
+                    planType: 'plus',
+                  },
+                  requiresOpenaiAuth: true,
+                },
+              }) + '\n'
+            );
+          }
+        } catch {}
+      }
+    });
+
+    const explicitConn = await adapter.getConnectionState(true);
+    assert.equal(explicitConn.connected, true);
+    assert.equal(explicitConn.status, 'available');
+    assert.equal(explicitConn.planType, 'plus');
+    assert.match(explicitConn.reason || '', /Signed in with ChatGPT \(PLUS\)/);
+  });
 });

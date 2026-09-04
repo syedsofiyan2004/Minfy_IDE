@@ -20,6 +20,7 @@ import {
   BedrockTestResult,
   CodexLoginStartResponse,
   CodexLoginStatusResponse,
+  CodexStatusResponse,
 } from '@minfy/shared';
 
 const API_BASE = '/api';
@@ -230,6 +231,10 @@ export const api = {
     return fetchJson<{ cancelled: boolean }>(`${API_BASE}/ai/providers/codex/login/${encodeURIComponent(loginId)}/cancel`, {
       method: 'POST',
     });
+  },
+
+  getCodexStatus: async (): Promise<CodexStatusResponse> => {
+    return fetchJson<CodexStatusResponse>(`${API_BASE}/ai/providers/codex/status`);
   },
 
   streamAIGenerate: async (
