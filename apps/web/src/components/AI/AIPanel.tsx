@@ -33,6 +33,29 @@ interface Message {
   isStreaming?: boolean;
 }
 
+export function mergeCodexStatus(
+  providerList: AIProvider[],
+  codexStatus: {
+    connected: boolean;
+    status: any;
+    reason?: string;
+    statusReason?: string;
+    planType?: string;
+  }
+): AIProvider[] {
+  return providerList.map((p) =>
+    p.id === 'codex'
+      ? {
+          ...p,
+          connected: codexStatus.connected,
+          status: codexStatus.status,
+          statusReason: codexStatus.reason || codexStatus.statusReason,
+          planType: codexStatus.planType,
+        }
+      : p
+  );
+}
+
 export const AIPanel: React.FC = () => {
   const [providers, setProviders] = useState<AIProvider[]>([]);
   const [credentialBackendName, setCredentialBackendName] = useState<string>('Windows Credential Manager');
@@ -76,23 +99,16 @@ export const AIPanel: React.FC = () => {
   const isLocalExecution = currentModel ? currentModel.executionLocation === 'local' : selectedProvider === 'ollama';
   const isFreeModel = currentModel ? currentModel.billingType === 'free' : false;
 
-  // Helper to resolve truthful Codex status
-  const resolveCodexStatus = async () => {
+  // Helper to resolve truthful Codex status and merge into a provided or current provider list
+  const resolveCodexStatus = async (baseProviders?: AIProvider[]) => {
     try {
       const statusRes = await api.getCodexStatus();
-      setProviders((prev) =>
-        prev.map((p) =>
-          p.id === 'codex'
-            ? {
-                ...p,
-                connected: statusRes.connected,
-                status: statusRes.status,
-                statusReason: statusRes.reason || statusRes.statusReason,
-                planType: statusRes.planType,
-              }
-            : p
-        )
-      );
+      if (baseProviders) {
+        const enriched = mergeCodexStatus(baseProviders, statusRes);
+        setProviders(enriched);
+      } else {
+        setProviders((prev) => mergeCodexStatus(prev, statusRes));
+      }
       return statusRes;
     } catch (err) {
       console.warn('Failed to resolve Codex status:', err);
@@ -100,35 +116,52 @@ export const AIPanel: React.FC = () => {
     }
   };
 
-  // Load providers on mount
-  const loadProviders = async (targetProviderId?: string) => {
+  // Load / refresh providers
+  // options.targetProviderId: explicitly switch selection if desired (e.g. creating a new provider)
+  // options.preserveSelection: when true, keep current selectedProvider intact without overriding
+  const loadProviders = async (options?: { targetProviderId?: string; preserveSelection?: boolean }) => {
     try {
       setLoadingProviders(true);
       const res = await api.listAIProviders();
-      let currentProviders = res.providers;
+      const currentProviders = res.providers;
 
-      const targetId = targetProviderId || selectedProvider;
-      const validProv = currentProviders.some((p) => p.id === targetId)
-        ? targetId
-        : currentProviders[0]?.id || 'ollama';
-
-      setSelectedProvider(validProv);
-      localStorage.setItem('minfy_ai_provider', validProv);
+      // 1. Immediately establish provider list in state before any async provider-specific enrichment
+      setProviders(currentProviders);
 
       if (res.credentialBackendName) {
         setCredentialBackendName(res.credentialBackendName);
       }
 
+      // Determine the active selection
+      let activeProvId = selectedProvider;
+      if (options?.targetProviderId) {
+        activeProvId = options.targetProviderId;
+      } else if (!options?.preserveSelection) {
+        // Bootstrap mode: resolve valid provider from stored value or default
+        const stored = localStorage.getItem('minfy_ai_provider') || selectedProvider;
+        activeProvId = currentProviders.some((p) => p.id === stored)
+          ? stored
+          : currentProviders[0]?.id || 'ollama';
+      }
+
+      // Validate provider exists in list
+      const validProv = currentProviders.some((p) => p.id === activeProvId)
+        ? activeProvId
+        : currentProviders[0]?.id || 'ollama';
+
+      setSelectedProvider(validProv);
+      localStorage.setItem('minfy_ai_provider', validProv);
+
+      // If the selected provider is Codex, enrich with live App Server status
       if (validProv === 'codex') {
-        const codexStatus = await resolveCodexStatus();
-        if (codexStatus?.connected) {
+        const result = await resolveCodexStatus(currentProviders);
+        if (result?.connected) {
           await loadModels('codex');
         } else {
           setModels([]);
           setSelectedModel('');
         }
       } else {
-        setProviders(currentProviders);
         await loadModels(validProv);
       }
     } catch {
@@ -198,7 +231,7 @@ export const AIPanel: React.FC = () => {
       setConnectError(null);
       await api.connectAIProvider(selectedProvider, trimmedKey);
       setApiKeyInput('');
-      await loadProviders(selectedProvider);
+      await loadProviders({ targetProviderId: selectedProvider });
     } catch (err: any) {
       setConnectError(err.message || 'Connection failed. Please check your API key.');
     } finally {
@@ -209,7 +242,7 @@ export const AIPanel: React.FC = () => {
   const handleDisconnectProvider = async () => {
     try {
       await api.disconnectAIProvider(selectedProvider);
-      await loadProviders(selectedProvider);
+      await loadProviders({ targetProviderId: selectedProvider });
     } catch (err: any) {
       console.warn('Disconnect error:', err);
     }
@@ -341,7 +374,7 @@ export const AIPanel: React.FC = () => {
           if (status.status === 'completed') {
             clearInterval(interval);
             setIsCodexLoggingIn(false);
-            await loadProviders('codex');
+            await loadProviders({ preserveSelection: true });
           } else if (status.status === 'failed') {
             clearInterval(interval);
             setIsCodexLoggingIn(false);
@@ -400,7 +433,7 @@ export const AIPanel: React.FC = () => {
         </div>
 
         <button
-          onClick={() => loadProviders()}
+          onClick={() => loadProviders({ preserveSelection: true })}
           title="Refresh AI Provider Status"
           style={{ padding: '3px', borderRadius: '3px', color: 'var(--text-muted)' }}
         >
@@ -1140,7 +1173,7 @@ export const AIPanel: React.FC = () => {
         isOpen={isBedrockModalOpen}
         onClose={() => setIsBedrockModalOpen(false)}
         onSaveSuccess={async () => {
-          await loadProviders('bedrock');
+          await loadProviders({ targetProviderId: 'bedrock' });
         }}
       />
     </div>

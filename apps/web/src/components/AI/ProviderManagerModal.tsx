@@ -22,7 +22,7 @@ interface ProviderManagerModalProps {
   isOpen: boolean;
   onClose: () => void;
   providers: AIProvider[];
-  onRefresh: (targetProviderId?: string) => Promise<void>;
+  onRefresh: (options?: { targetProviderId?: string; preserveSelection?: boolean }) => Promise<void>;
 }
 
 export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
@@ -71,7 +71,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
       setDeletingId(null);
       setFormError(null);
       api.getCodexStatus()
-        .then(() => onRefresh('codex'))
+        .then(() => onRefresh({ preserveSelection: true }))
         .catch(() => {});
     }
   }, [isOpen]);
@@ -185,7 +185,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
       }
 
       await loadManifests();
-      await onRefresh(enabled ? cleanId : undefined);
+      await onRefresh({ targetProviderId: enabled ? cleanId : undefined, preserveSelection: !enabled });
       setView('list');
     } catch (err: any) {
       setFormError(err.message || 'Failed to save provider.');
@@ -200,7 +200,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
       await api.deleteProviderManifest(targetId);
       setDeletingId(null);
       await loadManifests();
-      await onRefresh();
+      await onRefresh({ preserveSelection: true });
     } catch (err: any) {
       setFormError(err.message || 'Failed to delete provider.');
     } finally {
@@ -233,7 +233,7 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
           if (status.status === 'completed') {
             clearInterval(interval);
             setCodexLoggingIn(false);
-            await onRefresh('codex');
+            await onRefresh({ preserveSelection: true });
           } else if (status.status === 'failed') {
             clearInterval(interval);
             setCodexLoggingIn(false);

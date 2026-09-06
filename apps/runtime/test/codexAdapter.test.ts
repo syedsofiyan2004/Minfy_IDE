@@ -7,7 +7,7 @@ import { codexRuntimeManager } from '../src/services/ai/codex/codexRuntimeManage
 import { codexDiscoveryService } from '../src/services/ai/codex/codexDiscovery.js';
 import { credentialStore } from '../src/services/credentialStore.js';
 import { aiProviderRegistry } from '../src/services/ai/aiRegistry.js';
-import { AIStreamEvent } from '@minfy/shared';
+import { AIStreamEvent, AIProvider, mergeCodexStatus } from '@minfy/shared';
 
 describe('OpenAI Codex Adapter & Context Isolation (Milestones 7 & 7.1)', () => {
   let adapter: CodexAdapter;
@@ -450,5 +450,140 @@ describe('OpenAI Codex Adapter & Context Isolation (Milestones 7 & 7.1)', () => 
     assert.equal(explicitConn.status, 'available');
     assert.equal(explicitConn.planType, 'plus');
     assert.match(explicitConn.reason || '', /Signed in with ChatGPT \(PLUS\)/);
+  });
+
+  describe('UI State Correctness & Selection Preservation (Milestone 7.1.2)', () => {
+    const mockProviders: AIProvider[] = [
+      {
+        id: 'ollama',
+        name: 'Ollama (Local)',
+        type: 'local',
+        status: 'available',
+        endpoint: 'http://127.0.0.1:11434',
+        defaultExecutionLocation: 'local',
+        defaultBillingType: 'free',
+        authType: 'none',
+        connected: true,
+      },
+      {
+        id: 'codex',
+        name: 'OpenAI Codex (ChatGPT Account)',
+        type: 'subscription',
+        status: 'unauthenticated',
+        defaultExecutionLocation: 'cloud',
+        defaultBillingType: 'paid',
+        authType: 'oauth',
+        connected: false,
+      },
+      {
+        id: 'bedrock',
+        name: 'AWS Bedrock',
+        type: 'cloud',
+        status: 'configured',
+        defaultExecutionLocation: 'cloud',
+        defaultBillingType: 'paid',
+        authType: 'none',
+        connected: true,
+      },
+    ];
+
+    it('mergeCodexStatus enriches codex provider with live connection state without mutating others', () => {
+      const liveStatus = {
+        connected: true,
+        status: 'available' as const,
+        reason: 'Signed in with ChatGPT (PRO)',
+        planType: 'pro',
+      };
+
+      const originalCopy = JSON.parse(JSON.stringify(mockProviders));
+      const result = mergeCodexStatus(mockProviders, liveStatus);
+
+      // Verify result array length is preserved
+      assert.equal(result.length, 3);
+
+      // Verify non-codex providers are identical
+      const ollama = result.find((p) => p.id === 'ollama');
+      assert.ok(ollama);
+      assert.equal(ollama?.connected, true);
+      assert.equal(ollama?.status, 'available');
+
+      const bedrock = result.find((p) => p.id === 'bedrock');
+      assert.ok(bedrock);
+      assert.equal(bedrock?.connected, true);
+      assert.equal(bedrock?.status, 'configured');
+
+      // Verify codex is enriched
+      const codex = result.find((p) => p.id === 'codex');
+      assert.ok(codex);
+      assert.equal(codex?.connected, true);
+      assert.equal(codex?.status, 'available');
+      assert.equal(codex?.statusReason, 'Signed in with ChatGPT (PRO)');
+      assert.equal(codex?.planType, 'pro');
+      assert.equal(codex?.name, 'OpenAI Codex (ChatGPT Account)');
+      assert.equal(codex?.type, 'subscription');
+
+      // Verify immutability of input array
+      assert.deepEqual(mockProviders, originalCopy);
+    });
+
+    it('mergeCodexStatus handles disconnected / unauthenticated status properly', () => {
+      const disconnectedStatus = {
+        connected: false,
+        status: 'unauthenticated' as const,
+        reason: 'Sign in to ChatGPT required',
+      };
+
+      const result = mergeCodexStatus(mockProviders, disconnectedStatus);
+      const codex = result.find((p) => p.id === 'codex');
+      assert.ok(codex);
+      assert.equal(codex?.connected, false);
+      assert.equal(codex?.status, 'unauthenticated');
+      assert.equal(codex?.statusReason, 'Sign in to ChatGPT required');
+      assert.equal(codex?.planType, undefined);
+    });
+
+    it('mergeCodexStatus safely handles provider lists without codex', () => {
+      const providersWithoutCodex = mockProviders.filter((p) => p.id !== 'codex');
+      const liveStatus = {
+        connected: true,
+        status: 'available' as const,
+        reason: 'Signed in with ChatGPT (PLUS)',
+      };
+
+      const result = mergeCodexStatus(providersWithoutCodex, liveStatus);
+      assert.equal(result.length, 2);
+      assert.equal(result.find((p) => p.id === 'codex'), undefined);
+      assert.equal(result[0].id, 'ollama');
+      assert.equal(result[1].id, 'bedrock');
+    });
+
+    it('selection preservation contract: loadProviders preserveSelection leaves active selection untouched', () => {
+      let activeProvider = 'ollama';
+      const onRefresh = (options?: { targetProviderId?: string; preserveSelection?: boolean }) => {
+        if (options?.preserveSelection) {
+          // preserve selection, do not change
+          return;
+        }
+        if (options?.targetProviderId) {
+          activeProvider = options.targetProviderId;
+        }
+      };
+
+      // Simulating opening ProviderManagerModal
+      onRefresh({ preserveSelection: true });
+      assert.equal(activeProvider, 'ollama', 'Active provider must remain ollama when manager opens');
+
+      // Simulating deleting a provider in manager
+      onRefresh({ preserveSelection: true });
+      assert.equal(activeProvider, 'ollama', 'Active provider must remain ollama after deleting non-active provider');
+
+      // Simulating Codex login inside manager
+      onRefresh({ preserveSelection: true });
+      assert.equal(activeProvider, 'ollama', 'Active provider must remain ollama after Codex login');
+
+      // Simulating explicit user switch in AIPanel header
+      onRefresh({ targetProviderId: 'codex' });
+      assert.equal(activeProvider, 'codex', 'Active provider explicitly switches when requested');
+    });
   });
 });

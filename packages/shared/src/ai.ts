@@ -84,6 +84,23 @@ export interface CodexStatusResponse {
   planType?: string;
 }
 
+export function mergeCodexStatus(
+  providers: AIProvider[],
+  codexStatus: CodexStatusResponse
+): AIProvider[] {
+  return providers.map((p) =>
+    p.id === 'codex'
+      ? {
+          ...p,
+          connected: codexStatus.connected,
+          status: codexStatus.status,
+          statusReason: codexStatus.reason || codexStatus.statusReason,
+          planType: codexStatus.planType,
+        }
+      : p
+  );
+}
+
 export interface AIProvider {
   id: string;
   name: string;
