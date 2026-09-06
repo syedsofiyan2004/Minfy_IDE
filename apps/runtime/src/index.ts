@@ -64,15 +64,30 @@ app.use('/api/workspaces', workspaceRouter);
 app.use('/api/workspaces/:id/intelligence', intelligenceRouter);
 app.use('/api/workspaces/:id', fileRouter);
 
-// Static Web App Serving (if web dist exists)
-const webDistPath = path.resolve(__dirname, '../../web/dist');
-if (fs.existsSync(webDistPath)) {
+import { resolveWebDistPath } from './utils/webDist.js';
+export { resolveWebDistPath };
+
+// Static Web App Serving
+const webDistPath = resolveWebDistPath();
+if (webDistPath) {
   app.use(express.static(webDistPath));
   app.get('*', (_req, res, next) => {
     if (_req.path.startsWith('/api/') || _req.path.startsWith('/ws/')) {
       return next();
     }
     res.sendFile(path.join(webDistPath, 'index.html'));
+  });
+} else {
+  // Graceful fallback when web assets are not built yet
+  app.get('*', (_req, res, next) => {
+    if (_req.path.startsWith('/api/') || _req.path.startsWith('/ws/')) {
+      return next();
+    }
+    res.status(503).send(`<!DOCTYPE html>
+<html>
+<head><title>Minfy IDE - Build Required</title><style>body{font-family:sans-serif;background:#0f172a;color:#f8fafc;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}div{background:#1e293b;padding:2rem;border-radius:8px;max-width:500px;text-align:center}code{background:#334155;padding:0.2rem 0.4rem;border-radius:4px}</style></head>
+<body><div><h2>Minfy IDE Web Assets Not Found</h2><p>The Minfy web application frontend has not been compiled yet.</p><p>Please run: <code>npm run build</code> in the Minfy IDE repository.</p></div></body>
+</html>`);
   });
 }
 
@@ -169,7 +184,15 @@ process.on('SIGTERM', () => {
 });
 
 // Auto-start if run directly
-if (process.argv[1] === __filename || process.env.NODE_ENV !== 'test') {
+const scriptPath = process.argv[1] || '';
+const isDirectlyExecuted =
+  scriptPath === __filename ||
+  scriptPath.endsWith('runtime/dist/index.js') ||
+  scriptPath.endsWith('runtime\\dist\\index.js') ||
+  scriptPath.endsWith('runtime/src/index.ts') ||
+  scriptPath.endsWith('runtime\\src\\index.ts');
+
+if (isDirectlyExecuted && process.env.NODE_ENV !== 'test') {
   startServer().catch((err) => {
     console.error('[Minfy Runtime] Failed to start server:', err);
     process.exit(1);

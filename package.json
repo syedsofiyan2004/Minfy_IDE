@@ -2,13 +2,19 @@
   "name": "minfy-ide-root",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "minfy": "./cli/bin/minfy.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "workspaces": [
     "packages/*",
     "apps/*",
     "cli"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build --workspace=@minfy/shared && npm run build --workspace=@minfy/runtime && npm run build --workspace=@minfy/web && npm run build --workspace=@minfy/cli",
     "dev:runtime": "npm run dev --workspace=@minfy/runtime",
     "dev:web": "npm run dev --workspace=@minfy/web",
     "build:web": "npm run build --workspace=@minfy/web",

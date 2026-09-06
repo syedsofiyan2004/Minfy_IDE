@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -268,10 +269,10 @@ export function findPortPid(port: number): Promise<number | null> {
   return new Promise((resolve) => {
     const isWin = os.platform() === 'win32';
     if (isWin) {
-      const netstatCmd = fs.existsSync('C:\\Windows\\System32\\netstat.exe')
-        ? 'C:\\Windows\\System32\\netstat.exe'
-        : 'netstat';
-      exec(`${netstatCmd} -ano -p tcp`, (err, stdout) => {
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const netstatPath = path.join(systemRoot, 'System32', 'netstat.exe');
+      const netstatCmd = fs.existsSync(netstatPath) ? netstatPath : 'netstat';
+      exec(`"${netstatCmd}" -ano -p tcp`, (err, stdout) => {
         if (err || !stdout) return resolve(null);
         const lines = stdout.trim().split('\n');
         for (const line of lines) {
@@ -302,10 +303,10 @@ export function terminatePid(pid: number): Promise<void> {
     } catch {}
 
     if (os.platform() === 'win32') {
-      const taskkillCmd = fs.existsSync('C:\\Windows\\System32\\taskkill.exe')
-        ? 'C:\\Windows\\System32\\taskkill.exe'
-        : 'taskkill';
-      exec(`${taskkillCmd} /PID ${pid} /F /T`, () => {
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const taskkillPath = path.join(systemRoot, 'System32', 'taskkill.exe');
+      const taskkillCmd = fs.existsSync(taskkillPath) ? taskkillPath : 'taskkill';
+      exec(`"${taskkillCmd}" /PID ${pid} /F /T`, () => {
         setTimeout(resolve, 600);
       });
     } else {
@@ -317,10 +318,68 @@ export function terminatePid(pid: number): Promise<void> {
   });
 }
 
+export interface ResolvedRuntimeEntry {
+  dist?: string;
+  src?: string;
+  repoRoot?: string;
+}
+
+// Resolve runtime entrypoint independent of process.cwd()
+export function resolveRuntimeEntry(): ResolvedRuntimeEntry {
+  if (process.env.MINFY_RUNTIME_PATH && fs.existsSync(process.env.MINFY_RUNTIME_PATH)) {
+    return {
+      dist: process.env.MINFY_RUNTIME_PATH,
+      repoRoot: path.resolve(path.dirname(process.env.MINFY_RUNTIME_PATH), '../../'),
+    };
+  }
+
+  // Follow realpath of CLI script to accurately trace npm link symlinks/junctions
+  let cliDir: string;
+  try {
+    const realFile = fs.realpathSync(__filename);
+    cliDir = path.dirname(realFile);
+  } catch {
+    cliDir = __dirname;
+  }
+
+  const distCandidates = [
+    path.resolve(cliDir, '../../apps/runtime/dist/index.js'),
+    path.resolve(cliDir, '../apps/runtime/dist/index.js'),
+    path.resolve(cliDir, '../../../apps/runtime/dist/index.js'),
+    path.resolve(__dirname, '../../apps/runtime/dist/index.js'),
+  ];
+
+  for (const cand of distCandidates) {
+    if (fs.existsSync(cand)) {
+      return {
+        dist: cand,
+        repoRoot: path.resolve(path.dirname(cand), '../../'),
+      };
+    }
+  }
+
+  const srcCandidates = [
+    path.resolve(cliDir, '../../apps/runtime/src/index.ts'),
+    path.resolve(cliDir, '../apps/runtime/src/index.ts'),
+    path.resolve(cliDir, '../../../apps/runtime/src/index.ts'),
+    path.resolve(__dirname, '../../apps/runtime/src/index.ts'),
+  ];
+
+  for (const cand of srcCandidates) {
+    if (fs.existsSync(cand)) {
+      return {
+        src: cand,
+        repoRoot: path.resolve(path.dirname(cand), '../../'),
+      };
+    }
+  }
+
+  return {};
+}
+
 // Spawn new runtime daemon
 export function spawnRuntimeProcess(): void {
-  const runtimeDist = path.resolve(__dirname, '../../apps/runtime/dist/index.js');
-  const runtimeSrc = path.resolve(__dirname, '../../apps/runtime/src/index.ts');
+  const { dist: runtimeDist, src: runtimeSrc, repoRoot } = resolveRuntimeEntry();
 
   const minfyDir = path.join(os.homedir(), '.minfy');
   if (!fs.existsSync(minfyDir)) {
@@ -332,15 +391,18 @@ export function spawnRuntimeProcess(): void {
 
   let proc;
   const isWindows = os.platform() === 'win32';
+  const daemonCwd = runtimeDist ? path.dirname(runtimeDist) : (repoRoot || process.cwd());
 
-  if (fs.existsSync(runtimeDist)) {
+  if (runtimeDist) {
     proc = spawn(process.execPath, [runtimeDist], {
+      cwd: daemonCwd,
       detached: true,
       stdio: ['ignore', out, err],
       windowsHide: isWindows,
     });
-  } else if (fs.existsSync(runtimeSrc)) {
+  } else if (runtimeSrc) {
     proc = spawn('npx', ['tsx', runtimeSrc], {
+      cwd: daemonCwd,
       shell: true,
       detached: true,
       stdio: ['ignore', out, err],
@@ -532,7 +594,78 @@ export function registerWorkspace(targetDir: string, token: string): Promise<Reg
   });
 }
 
-async function main() {
+export async function runDoctor(): Promise<void> {
+  console.log('\x1b[1;34mMinfy IDE Doctor\x1b[0m\n');
+
+  // 1. Version and Node
+  console.log(`Minfy CLI Version: 0.1.0`);
+  console.log(`Node.js Version:   ${process.version} (${process.platform} ${process.arch})`);
+
+  // 2. Runtime Entrypoint
+  const { dist: runtimeDist, src: runtimeSrc } = resolveRuntimeEntry();
+  if (runtimeDist) {
+    console.log(`Runtime Daemon:    \x1b[32mPresent\x1b[0m (${runtimeDist})`);
+  } else if (runtimeSrc) {
+    console.log(`Runtime Daemon:    \x1b[33mSource only\x1b[0m (${runtimeSrc})`);
+  } else {
+    console.log(`Runtime Daemon:    \x1b[31mNot found (run npm run build)\x1b[0m`);
+  }
+
+  // 3. Web Assets
+  const webCandidates = [
+    process.env.MINFY_WEB_DIST,
+    runtimeDist ? path.resolve(path.dirname(runtimeDist), '../../web/dist') : undefined,
+    path.resolve(__dirname, '../../apps/web/dist'),
+  ].filter(Boolean) as string[];
+
+  let webFound = false;
+  for (const cand of webCandidates) {
+    if (fs.existsSync(path.join(cand, 'index.html'))) {
+      console.log(`Web Assets:        \x1b[32mPresent\x1b[0m (${cand})`);
+      webFound = true;
+      break;
+    }
+  }
+  if (!webFound) {
+    console.log(`Web Assets:        \x1b[31mNot found (run npm run build)\x1b[0m`);
+  }
+
+  // 4. Runtime Status & Port
+  const portBound = await isPortBound(RUNTIME_PORT);
+  const isHealthy = await checkHealth();
+  const state = readRuntimeState();
+
+  const portStatus = portBound
+    ? isHealthy
+      ? '\x1b[32mActive (Responding to health checks)\x1b[0m'
+      : '\x1b[31mOccupied (Unverified / Foreign process)\x1b[0m'
+    : '\x1b[36mFree\x1b[0m';
+  console.log(`Runtime Port ${RUNTIME_PORT}: ${portStatus}`);
+
+  if (state.valid && state.pid) {
+    console.log(`Runtime PID:       ${state.pid} (Instance: ${state.runtimeInstanceId})`);
+  } else {
+    console.log(`Runtime State:     No active state file`);
+  }
+
+  // 5. Codex CLI presence check (non-blocking)
+  const hasCodex = await new Promise<boolean>((resolve) => {
+    exec('codex --version', (err) => resolve(!err));
+  });
+  console.log(`Codex CLI:         ${hasCodex ? '\x1b[32mInstalled\x1b[0m' : '\x1b[33mNot found (optional)\x1b[0m'}`);
+
+  // 6. Security & Credential Storage
+  const platform = os.platform();
+  const vaultName =
+    platform === 'win32'
+      ? 'Windows DPAPI Vault'
+      : platform === 'darwin'
+      ? 'macOS Keychain'
+      : 'Linux Secret Service / Keyring';
+  console.log(`Credential Vault:  ${vaultName}`);
+}
+
+export async function main() {
   const args = process.argv.slice(2);
 
   if (args.includes('--help') || args.includes('-h')) {
@@ -542,6 +675,7 @@ async function main() {
 \x1b[1mUsage:\x1b[0m
   minfy [path]               Open directory in Minfy IDE (defaults to current directory)
   minfy --restart-runtime    Stop running verified runtime daemon and start a fresh instance
+  minfy doctor               Check environment, runtime status, web assets, and dependencies
   minfy --help               Show help
   minfy --version            Show version
 `);
@@ -551,6 +685,16 @@ async function main() {
   if (args.includes('--version') || args.includes('-v')) {
     console.log('0.1.0');
     process.exit(0);
+  }
+
+  if (args.includes('doctor') || args.includes('--doctor')) {
+    try {
+      await runDoctor();
+      process.exit(0);
+    } catch (err: any) {
+      console.error(`\x1b[31m[Minfy Error]\x1b[0m ${err.message || err}`);
+      process.exit(1);
+    }
   }
 
   if (args.includes('--restart-runtime')) {
@@ -600,6 +744,14 @@ async function main() {
 }
 
 // Run CLI when invoked directly
-if (process.argv[1] === __filename || process.argv[1]?.endsWith('cli/dist/index.js')) {
+const scriptPath = process.argv[1] || '';
+const isDirectlyExecuted =
+  scriptPath === __filename ||
+  scriptPath.endsWith('cli/dist/index.js') ||
+  scriptPath.endsWith('cli\\dist\\index.js') ||
+  scriptPath.endsWith('cli/src/index.ts') ||
+  scriptPath.endsWith('cli\\src\\index.ts');
+
+if (isDirectlyExecuted) {
   main();
 }
