@@ -153,52 +153,61 @@ export const BedrockConfigModal: React.FC<BedrockConfigModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-[#181825] border border-[#313244] rounded-lg shadow-2xl w-full max-w-md flex flex-col max-h-[85vh] overflow-hidden text-[#cdd6f4]">
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card modal-card-md" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#313244]">
-          <div className="flex items-center gap-2">
-            <Cloud className="w-5 h-5 text-[#89b4fa]" />
-            <h2 className="text-base font-semibold text-[#cdd6f4]">
-              Configure AWS Bedrock
-            </h2>
+        <div className="modal-header">
+          <div className="modal-title">
+            <Cloud size={18} color="var(--info)" />
+            <span>Configure AWS Bedrock</span>
           </div>
-          <button
-            onClick={onClose}
-            className="text-[#a6adc8] hover:text-[#cdd6f4] p-1 rounded-md hover:bg-[#313244] transition-colors"
-          >
-            <X className="w-4 h-4" />
+          <button onClick={onClose} className="modal-close-btn" title="Close">
+            <X size={16} />
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-5 space-y-4">
+        <form onSubmit={handleSave} className="modal-body" style={{ gap: '14px' }}>
           {error && (
-            <div className="p-2.5 bg-[#f38ba8]/10 border border-[#f38ba8]/30 rounded text-xs text-[#f38ba8] flex items-center gap-1.5">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            <div
+              style={{
+                padding: '10px 12px',
+                backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                border: '1px solid rgba(248, 81, 73, 0.3)',
+                borderRadius: '6px',
+                fontSize: '12px',
+                color: 'var(--danger)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <AlertCircle size={15} style={{ flexShrink: 0 }} />
               <span>{error}</span>
             </div>
           )}
 
           {testResult && (
             <div
-              className={`p-3 rounded border text-xs space-y-1 ${
-                testResult.success
-                  ? 'bg-[#a6e3a1]/10 border-[#a6e3a1]/30 text-[#a6e3a1]'
-                  : 'bg-[#f38ba8]/10 border-[#f38ba8]/30 text-[#f38ba8]'
-              }`}
+              style={{
+                padding: '10px 12px',
+                borderRadius: '6px',
+                border: '1px solid ' + (testResult.success ? 'rgba(63, 185, 80, 0.3)' : 'rgba(248, 81, 73, 0.3)'),
+                backgroundColor: testResult.success ? 'rgba(63, 185, 80, 0.1)' : 'rgba(248, 81, 73, 0.1)',
+                color: testResult.success ? 'var(--success)' : 'var(--danger)',
+                fontSize: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+              }}
             >
-              <div className="flex items-center gap-1.5 font-medium">
-                {testResult.success ? (
-                  <CheckCircle className="w-4 h-4 flex-shrink-0" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}>
+                {testResult.success ? <CheckCircle size={15} /> : <AlertCircle size={15} />}
                 <span>{testResult.success ? 'Connection Successful' : 'Connection Failed'}</span>
               </div>
-              <p className="text-[11px] text-[#cdd6f4]">{testResult.message}</p>
+              <p style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{testResult.message}</p>
               {testResult.identity && (
-                <div className="text-[10px] font-mono text-[#a6adc8] pt-1">
+                <div style={{ fontSize: '10px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
                   {testResult.identity}
                 </div>
               )}
@@ -207,14 +216,14 @@ export const BedrockConfigModal: React.FC<BedrockConfigModalProps> = ({
 
           {/* Region Selection */}
           <div>
-            <label className="block text-xs font-medium text-[#a6adc8] mb-1">
-              AWS Region <span className="text-[#f38ba8]">*</span>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+              AWS Region <span style={{ color: 'var(--danger)' }}>*</span>
             </label>
             <select
               value={selectedRegion}
               onChange={(e) => setSelectedRegion(e.target.value)}
               disabled={loading}
-              className="w-full bg-[#1e1e2e] border border-[#313244] focus:border-[#89b4fa] rounded px-3 py-1.5 text-xs text-[#cdd6f4] outline-none"
+              style={{ width: '100%', cursor: 'pointer' }}
             >
               {COMMON_BEDROCK_REGIONS.map((r) => (
                 <option key={r.id} value={r.id}>
@@ -230,65 +239,87 @@ export const BedrockConfigModal: React.FC<BedrockConfigModalProps> = ({
                 onChange={(e) => setCustomRegion(e.target.value)}
                 placeholder="e.g. us-east-2"
                 required
-                className="w-full mt-2 bg-[#1e1e2e] border border-[#313244] focus:border-[#89b4fa] rounded px-3 py-1.5 text-xs font-mono text-[#cdd6f4] placeholder-[#6c7086] outline-none"
+                style={{ width: '100%', marginTop: '8px', fontFamily: 'var(--font-mono)' }}
               />
             )}
-            <p className="text-[10px] text-[#6c7086] mt-0.5">
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
               Bedrock availability and model access varies across AWS Regions.
             </p>
           </div>
 
           {/* Profile Name */}
           <div>
-            <label className="block text-xs font-medium text-[#a6adc8] mb-1">
-              AWS Profile <span className="text-[10px] text-[#6c7086]">(Optional)</span>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+              AWS Profile <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>(Optional)</span>
             </label>
             <input
               type="text"
               value={profile}
               onChange={(e) => setProfile(e.target.value)}
               placeholder="e.g. default, bedrock-main, or leave blank"
-              className="w-full bg-[#1e1e2e] border border-[#313244] focus:border-[#89b4fa] rounded px-3 py-1.5 text-xs font-mono text-[#cdd6f4] placeholder-[#6c7086] outline-none"
+              style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
             />
-            <p className="text-[10px] text-[#6c7086] mt-0.5">
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
               Named profile in your local ~/.aws/credentials or ~/.aws/config file.
             </p>
           </div>
 
           {/* Security Note */}
-          <div className="p-3 bg-[#1e1e2e] border border-[#313244] rounded text-xs text-[#a6adc8] flex items-start gap-2">
-            <HelpCircle className="w-4 h-4 text-[#89b4fa] flex-shrink-0 mt-0.5" />
-            <div className="text-[11px] leading-relaxed">
-              <span className="font-semibold text-[#cdd6f4]">Native AWS Authentication:</span> Minfy connects via the standard AWS SDK v3 credential chain (SSO, IAM Identity Center, environment variables, or named profiles). Your AWS secret keys are never requested or stored.
+          <div
+            style={{
+              padding: '10px 12px',
+              backgroundColor: 'var(--surface-1)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: '6px',
+              fontSize: '11px',
+              color: 'var(--text-muted)',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '8px',
+              lineHeight: 1.5,
+            }}
+          >
+            <HelpCircle size={15} color="var(--info)" style={{ flexShrink: 0, marginTop: '2px' }} />
+            <div>
+              <strong style={{ color: 'var(--text-primary)' }}>Native AWS Authentication:</strong> Minfy connects via the standard AWS SDK v3 credential chain (SSO, IAM Identity Center, environment variables, or named profiles). Your AWS secret keys are never requested or stored.
             </div>
           </div>
 
           {/* Action Buttons */}
-          <div className="flex items-center justify-between pt-3 border-t border-[#313244]">
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingTop: '12px',
+              borderTop: '1px solid var(--border-subtle)',
+              marginTop: '4px',
+            }}
+          >
             <button
               type="button"
               onClick={handleTestConnection}
               disabled={isTesting || isSaving}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[#89b4fa] bg-[#89b4fa]/10 hover:bg-[#89b4fa]/20 border border-[#89b4fa]/30 font-medium rounded transition-colors"
+              className="modal-btn modal-btn-secondary"
             >
-              {isTesting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              {isTesting ? 'Testing...' : 'Test Connection'}
+              {isTesting && <Loader2 size={13} className="animate-spin" />}
+              <span>{isTesting ? 'Testing...' : 'Test Connection'}</span>
             </button>
 
-            <div className="flex items-center gap-2">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <button
                 type="button"
                 onClick={onClose}
-                className="px-3 py-1.5 text-xs text-[#cdd6f4] bg-[#313244] hover:bg-[#45475a] rounded transition-colors"
+                className="modal-btn modal-btn-secondary"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={isSaving || isTesting}
-                className="px-4 py-1.5 text-xs text-[#11111b] bg-[#89b4fa] hover:bg-[#b4befe] font-semibold rounded transition-colors"
+                className="modal-btn modal-btn-primary"
               >
-                {isSaving ? 'Saving...' : 'Save'}
+                {isSaving ? 'Saving...' : 'Save Configuration'}
               </button>
             </div>
           </div>

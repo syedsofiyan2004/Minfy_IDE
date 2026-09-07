@@ -170,15 +170,18 @@ export async function startServer(
 
 // Cleanup runtime state on process termination
 process.on('exit', () => {
+  terminalService.shutdown();
   runtimeAuthService.cleanup();
 });
 
 process.on('SIGINT', () => {
+  terminalService.shutdown();
   runtimeAuthService.cleanup();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
+  terminalService.shutdown();
   runtimeAuthService.cleanup();
   process.exit(0);
 });

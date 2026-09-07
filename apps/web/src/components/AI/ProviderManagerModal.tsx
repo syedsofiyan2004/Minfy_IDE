@@ -249,35 +249,42 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-2xl bg-[#181825] border border-[#313244] rounded-lg shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#313244] bg-[#11111b]">
-          <div className="flex items-center gap-2.5">
-            <Settings2 className="w-5 h-5 text-[#89b4fa]" />
-            <h2 className="text-base font-semibold text-[#cdd6f4]">
-              AI Provider Manager
-            </h2>
+        <div className="modal-header">
+          <div className="modal-title">
+            <Settings2 size={18} color="var(--info)" />
+            <span>AI Provider Manager</span>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244] rounded transition-colors"
-          >
-            <X className="w-4 h-4" />
+          <button onClick={onClose} className="modal-close-btn" title="Close">
+            <X size={16} />
           </button>
         </div>
 
         {/* Content Body */}
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="modal-body">
           {view === 'list' && (
-            <div className="space-y-6">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               {/* Built-in Section */}
               <div>
-                <div className="text-xs font-semibold text-[#a6adc8] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <Shield className="w-3.5 h-3.5 text-[#89b4fa]" />
-                  Built-in Providers
+                <div
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    color: 'var(--text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.6px',
+                    marginBottom: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <Shield size={13} color="var(--info)" />
+                  <span>Built-in Providers</span>
                 </div>
-                <div className="space-y-2">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {builtInProviders.map((prov) => {
                     const isBedrock = prov.id === 'bedrock';
                     const isCodex = prov.id === 'codex';
@@ -298,40 +305,51 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                       : 'Offline / unreachable';
 
                     return (
-                      <div
-                        key={prov.id}
-                        className="flex items-center justify-between p-3 bg-[#1e1e2e] border border-[#313244] rounded-md"
-                      >
-                        <div className="flex items-center gap-2.5">
+                      <div key={prov.id} className="modal-card-item">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                           <div
-                            className={`w-2.5 h-2.5 rounded-full ${
-                              prov.status === 'available'
-                                ? 'bg-[#a6e3a1]'
-                                : prov.connected
-                                ? 'bg-[#89b4fa]'
-                                : 'bg-[#f38ba8]'
-                            }`}
+                            style={{
+                              width: '8px',
+                              height: '8px',
+                              borderRadius: '50%',
+                              backgroundColor:
+                                prov.status === 'available'
+                                  ? 'var(--success)'
+                                  : prov.connected
+                                  ? 'var(--info)'
+                                  : 'var(--danger)',
+                            }}
                           />
                           <div>
-                            <div className="text-sm font-medium text-[#cdd6f4] flex items-center gap-2">
-                              {prov.name}
-                              <span className="text-[10px] bg-[#313244] text-[#bac2de] px-1.5 py-0.5 rounded font-mono">
+                            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span>{prov.name}</span>
+                              <span
+                                style={{
+                                  fontSize: '10px',
+                                  backgroundColor: 'var(--surface-3)',
+                                  color: 'var(--text-muted)',
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  fontFamily: 'var(--font-mono)',
+                                }}
+                              >
                                 built-in
                               </span>
                             </div>
-                            <div className="text-xs text-[#6c7086]">
+                            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
                               {description}
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <div className="text-xs text-[#a6adc8]">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                             {prov.modelsCount ? `${prov.modelsCount} models` : '0 models'}
                           </div>
                           {isBedrock && (
                             <button
                               onClick={() => setIsBedrockModalOpen(true)}
-                              className="px-2 py-0.5 text-[11px] font-medium text-[#89b4fa] bg-[#89b4fa]/10 hover:bg-[#89b4fa]/20 border border-[#89b4fa]/30 rounded transition-colors"
+                              className="modal-btn modal-btn-secondary"
+                              style={{ padding: '3px 8px', fontSize: '11px' }}
                             >
                               Configure
                             </button>
@@ -340,7 +358,8 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                             <button
                               onClick={() => handleCodexLogin()}
                               disabled={codexLoggingIn}
-                              className="px-2.5 py-1 text-[11px] font-medium text-[#a6e3a1] bg-[#a6e3a1]/10 hover:bg-[#a6e3a1]/20 border border-[#a6e3a1]/30 rounded transition-colors"
+                              className="modal-btn modal-btn-primary"
+                              style={{ padding: '3px 10px', fontSize: '11px' }}
                             >
                               {codexLoggingIn ? 'Waiting...' : 'Sign in with ChatGPT'}
                             </button>
@@ -354,38 +373,59 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
 
               {/* Custom Providers Section */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-xs font-semibold text-[#a6adc8] uppercase tracking-wider flex items-center gap-1.5">
-                    <Layers className="w-3.5 h-3.5 text-[#f9e2af]" />
-                    Custom Providers ({manifests.length})
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                  <div
+                    style={{
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      color: 'var(--text-muted)',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    <Layers size={13} color="var(--minfy-yellow-accent)" />
+                    <span>Custom Providers ({manifests.length})</span>
                   </div>
                   <button
                     onClick={handleOpenAdd}
-                    className="flex items-center gap-1 text-xs text-[#89b4fa] hover:text-[#b4befe] font-medium transition-colors"
+                    className="modal-btn modal-btn-secondary"
+                    style={{ padding: '3px 8px', fontSize: '11px' }}
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    Add Provider
+                    <Plus size={12} />
+                    <span>Add Provider</span>
                   </button>
                 </div>
 
                 {loading ? (
-                  <div className="text-center py-6 text-xs text-[#6c7086]">
+                  <div style={{ textAlign: 'center', padding: '24px 0', fontSize: '12px', color: 'var(--text-muted)' }}>
                     Loading provider manifests...
                   </div>
                 ) : manifests.length === 0 ? (
-                  <div className="text-center py-6 border border-dashed border-[#313244] rounded-md text-xs text-[#6c7086]">
+                  <div
+                    style={{
+                      textAlign: 'center',
+                      padding: '24px',
+                      border: '1px dashed var(--border-default)',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      color: 'var(--text-muted)',
+                    }}
+                  >
                     No custom OpenAI-compatible providers configured.
-                    <div className="mt-2">
+                    <div style={{ marginTop: '8px' }}>
                       <button
                         onClick={handleOpenAdd}
-                        className="text-[#89b4fa] hover:underline"
+                        style={{ color: 'var(--info)', cursor: 'pointer', textDecoration: 'underline' }}
                       >
                         Add your first compatible endpoint
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {manifests.map((m) => {
                       const isDisabled = m.enabled === false;
                       const runtimeProv = customProviders.find((p) => p.id === m.id);
@@ -395,53 +435,50 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                       return (
                         <div
                           key={m.id}
-                          className={`flex items-center justify-between p-3 border rounded-md transition-colors ${
-                            isDisabled
-                              ? 'bg-[#181825] border-[#313244]/60 opacity-75'
-                              : 'bg-[#1e1e2e] border-[#313244]'
-                          }`}
+                          className="modal-card-item"
+                          style={{ opacity: isDisabled ? 0.7 : 1 }}
                         >
-                          <div className="flex items-center gap-2.5">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                             <div
-                              className={`w-2.5 h-2.5 rounded-full ${
-                                isDisabled
-                                  ? 'bg-[#6c7086]'
+                              style={{
+                                width: '8px',
+                                height: '8px',
+                                borderRadius: '50%',
+                                backgroundColor: isDisabled
+                                  ? 'var(--text-disabled)'
                                   : isAvail
-                                  ? 'bg-[#a6e3a1]'
+                                  ? 'var(--success)'
                                   : isConn
-                                  ? 'bg-[#89b4fa]'
-                                  : 'bg-[#f38ba8]'
-                              }`}
+                                  ? 'var(--info)'
+                                  : 'var(--danger)',
+                              }}
                             />
                             <div>
-                              <div className="text-sm font-medium text-[#cdd6f4] flex items-center gap-2">
-                                {m.name}
+                              <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <span>{m.name}</span>
                                 {isDisabled ? (
-                                  <span className="text-[10px] bg-[#313244] text-[#6c7086] px-1.5 py-0.5 rounded font-mono">
+                                  <span style={{ fontSize: '10px', backgroundColor: 'var(--surface-3)', color: 'var(--text-muted)', padding: '1px 5px', borderRadius: '3px' }}>
                                     Disabled
                                   </span>
                                 ) : (
-                                  <span className="text-[10px] bg-[#313244] text-[#89b4fa] px-1.5 py-0.5 rounded font-mono">
+                                  <span style={{ fontSize: '10px', backgroundColor: 'var(--surface-3)', color: 'var(--info)', padding: '1px 5px', borderRadius: '3px' }}>
                                     {m.auth.type === 'bearer' ? 'Bearer' : 'None'}
                                   </span>
                                 )}
                               </div>
-                              <div className="text-xs text-[#6c7086] font-mono truncate max-w-[220px]">
+                              <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>
                                 {m.baseUrl}
                               </div>
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                             <button
                               onClick={() => handleToggleEnabled(m)}
                               title={isDisabled ? 'Enable Provider' : 'Disable Provider'}
                               disabled={isSubmitting}
-                              className={`px-2 py-0.5 text-[11px] font-medium rounded transition-colors ${
-                                isDisabled
-                                  ? 'text-[#a6e3a1] bg-[#a6e3a1]/10 hover:bg-[#a6e3a1]/20 border border-[#a6e3a1]/30'
-                                  : 'text-[#bac2de] bg-[#313244] hover:bg-[#45475a]'
-                              }`}
+                              className="modal-btn modal-btn-secondary"
+                              style={{ padding: '3px 8px', fontSize: '11px' }}
                             >
                               {isDisabled ? 'Enable' : 'Disable'}
                             </button>
@@ -449,17 +486,19 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                             <button
                               onClick={() => handleOpenEdit(m)}
                               title="Edit Provider"
-                              className="p-1.5 text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244] rounded transition-colors"
+                              className="modal-close-btn"
+                              style={{ padding: '5px' }}
                             >
-                              <Edit2 className="w-3.5 h-3.5" />
+                              <Edit2 size={13} />
                             </button>
 
                             <button
                               onClick={() => setDeletingId(m.id)}
                               title="Remove Provider"
-                              className="p-1.5 text-[#f38ba8] hover:bg-[#f38ba8]/10 rounded transition-colors"
+                              className="modal-close-btn"
+                              style={{ padding: '5px', color: 'var(--danger)' }}
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Trash2 size={13} />
                             </button>
                           </div>
                         </div>
@@ -469,26 +508,35 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                 )}
               </div>
 
-              {/* Delete Confirmation Modal */}
+              {/* Delete Confirmation Card */}
               {deletingId && (
-                <div className="p-3 bg-[#f38ba8]/10 border border-[#f38ba8]/30 rounded-md mt-4">
-                  <div className="text-xs text-[#f38ba8] font-medium mb-2">
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                    border: '1px solid rgba(248, 81, 73, 0.3)',
+                    borderRadius: '6px',
+                  }}
+                >
+                  <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--danger)', marginBottom: '4px' }}>
                     Remove &quot;{manifests.find((m) => m.id === deletingId)?.name || deletingId}&quot;?
                   </div>
-                  <p className="text-[11px] text-[#a6adc8] mb-3">
+                  <p style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '10px' }}>
                     This removes the provider configuration and any stored credentials.
                   </p>
-                  <div className="flex justify-end gap-2">
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
                     <button
                       onClick={() => setDeletingId(null)}
-                      className="px-2.5 py-1 text-xs text-[#cdd6f4] bg-[#313244] hover:bg-[#45475a] rounded transition-colors"
+                      className="modal-btn modal-btn-secondary"
+                      style={{ padding: '3px 10px', fontSize: '11px' }}
                     >
                       Cancel
                     </button>
                     <button
                       onClick={() => handleDeleteConfirm(deletingId)}
                       disabled={isSubmitting}
-                      className="px-2.5 py-1 text-xs text-[#11111b] bg-[#f38ba8] hover:bg-[#eba0ac] font-medium rounded transition-colors"
+                      className="modal-btn modal-btn-danger"
+                      style={{ padding: '3px 10px', fontSize: '11px' }}
                     >
                       {isSubmitting ? 'Removing...' : 'Remove Provider'}
                     </button>
@@ -500,17 +548,29 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
 
           {/* Add / Edit Form */}
           {(view === 'add' || view === 'edit') && (
-            <form onSubmit={handleSaveProvider} className="space-y-4">
+            <form onSubmit={handleSaveProvider} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               {formError && (
-                <div className="p-2.5 bg-[#f38ba8]/10 border border-[#f38ba8]/30 rounded text-xs text-[#f38ba8] flex items-center gap-1.5">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <div
+                  style={{
+                    padding: '8px 12px',
+                    backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                    border: '1px solid rgba(248, 81, 73, 0.3)',
+                    borderRadius: '6px',
+                    color: 'var(--danger)',
+                    fontSize: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  <AlertCircle size={15} style={{ flexShrink: 0 }} />
                   <span>{formError}</span>
                 </div>
               )}
 
               <div>
-                <label className="block text-xs font-medium text-[#a6adc8] mb-1">
-                  Provider Name <span className="text-[#f38ba8]">*</span>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                  Provider Name <span style={{ color: 'var(--danger)' }}>*</span>
                 </label>
                 <input
                   type="text"
@@ -518,13 +578,13 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                   onChange={(e) => handleNameChange(e.target.value)}
                   placeholder="e.g. Company AI Gateway, LM Studio"
                   required
-                  className="w-full bg-[#1e1e2e] border border-[#313244] focus:border-[#89b4fa] rounded px-3 py-1.5 text-xs text-[#cdd6f4] placeholder-[#6c7086] outline-none"
+                  style={{ width: '100%' }}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-[#a6adc8] mb-1">
-                  Provider ID <span className="text-[#f38ba8]">*</span>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                  Provider ID <span style={{ color: 'var(--danger)' }}>*</span>
                 </label>
                 <input
                   type="text"
@@ -536,16 +596,16 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                   }}
                   placeholder="e.g. company-ai"
                   required
-                  className="w-full bg-[#1e1e2e] border border-[#313244] focus:border-[#89b4fa] disabled:opacity-60 rounded px-3 py-1.5 text-xs font-mono text-[#cdd6f4] placeholder-[#6c7086] outline-none"
+                  style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
                 />
-                <p className="text-[10px] text-[#6c7086] mt-0.5">
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
                   Lowercase alphanumeric with dots, underscores, or hyphens.
                 </p>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-[#a6adc8] mb-1">
-                  Base URL <span className="text-[#f38ba8]">*</span>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                  Base URL <span style={{ color: 'var(--danger)' }}>*</span>
                 </label>
                 <input
                   type="url"
@@ -553,59 +613,65 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                   onChange={(e) => setBaseUrl(e.target.value)}
                   placeholder="http://127.0.0.1:1234/v1 or https://api.company.com/v1"
                   required
-                  className="w-full bg-[#1e1e2e] border border-[#313244] focus:border-[#89b4fa] rounded px-3 py-1.5 text-xs font-mono text-[#cdd6f4] placeholder-[#6c7086] outline-none"
+                  style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
                 />
-                <p className="text-[10px] text-[#6c7086] mt-0.5">
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
                   Must be http: or https:. Relative endpoints (/models, /chat/completions) cannot escape this boundary.
                 </p>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-[#a6adc8] mb-1.5">
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '6px' }}>
                   Authentication Method
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className={`flex items-center gap-2 p-2.5 rounded border cursor-pointer text-xs transition-colors ${
-                    authType === 'none'
-                      ? 'border-[#89b4fa] bg-[#89b4fa]/10 text-[#cdd6f4]'
-                      : 'border-[#313244] bg-[#1e1e2e] text-[#a6adc8]'
-                  }`}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: '1px solid ' + (authType === 'none' ? 'var(--info)' : 'var(--border-default)'),
+                      backgroundColor: authType === 'none' ? 'rgba(88, 166, 255, 0.1)' : 'var(--surface-1)',
+                      cursor: 'pointer',
+                      fontSize: '12px',
+                    }}
+                  >
                     <input
                       type="radio"
                       name="authType"
                       checked={authType === 'none'}
                       onChange={() => setAuthType('none')}
-                      className="hidden"
+                      style={{ margin: 0 }}
                     />
-                    <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${
-                      authType === 'none' ? 'border-[#89b4fa] bg-[#89b4fa]' : 'border-[#6c7086]'
-                    }`}>
-                      {authType === 'none' && <div className="w-1.5 h-1.5 bg-[#11111b] rounded-full" />}
-                    </div>
                     <span>None (Local / Open)</span>
                   </label>
 
-                  <label className={`flex items-center gap-2 p-2.5 rounded border cursor-pointer text-xs transition-colors ${
-                    authType === 'bearer'
-                      ? 'border-[#89b4fa] bg-[#89b4fa]/10 text-[#cdd6f4]'
-                      : 'border-[#313244] bg-[#1e1e2e] text-[#a6adc8]'
-                  }`}>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: '1px solid ' + (authType === 'bearer' ? 'var(--info)' : 'var(--border-default)'),
+                      backgroundColor: authType === 'bearer' ? 'rgba(88, 166, 255, 0.1)' : 'var(--surface-1)',
+                      cursor: 'pointer',
+                      fontSize: '12px',
+                    }}
+                  >
                     <input
                       type="radio"
                       name="authType"
                       checked={authType === 'bearer'}
                       onChange={() => setAuthType('bearer')}
-                      className="hidden"
+                      style={{ margin: 0 }}
                     />
-                    <div className={`w-3 h-3 rounded-full border flex items-center justify-center ${
-                      authType === 'bearer' ? 'border-[#89b4fa] bg-[#89b4fa]' : 'border-[#6c7086]'
-                    }`}>
-                      {authType === 'bearer' && <div className="w-1.5 h-1.5 bg-[#11111b] rounded-full" />}
-                    </div>
                     <span>API Key (Bearer)</span>
                   </label>
                 </div>
-                <p className="text-[10px] text-[#6c7086] mt-1">
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
                   {authType === 'bearer'
                     ? 'API key will be secured in Minfy CredentialStore. Never stored inside manifest file.'
                     : 'No credentials required. Connects directly to the endpoint.'}
@@ -613,41 +679,51 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
               </div>
 
               {/* Enabled checkbox */}
-              <div className="pt-2">
-                <label className="flex items-center gap-2 text-xs text-[#cdd6f4] cursor-pointer">
+              <div style={{ paddingTop: '4px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
                   <input
                     type="checkbox"
                     checked={enabled}
                     onChange={(e) => setEnabled(e.target.checked)}
-                    className="rounded border-[#313244] bg-[#1e1e2e] text-[#89b4fa]"
                   />
                   <span>Enable this provider for active AI usage</span>
                 </label>
-                <p className="text-[10px] text-[#6c7086] ml-5">
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: '22px', marginTop: '2px' }}>
                   Disabled providers remain saved on disk but are inactive and hidden from the editor picker.
                 </p>
               </div>
 
               {/* Advanced semantic defaults */}
-              <div className="pt-2 border-t border-[#313244]">
+              <div style={{ paddingTop: '8px', borderTop: '1px solid var(--border-subtle)' }}>
                 <button
                   type="button"
                   onClick={() => setShowAdvanced(!showAdvanced)}
-                  className="text-xs text-[#89b4fa] hover:text-[#b4befe] flex items-center gap-1"
+                  style={{ fontSize: '12px', color: 'var(--info)', display: 'flex', alignItems: 'center', gap: '4px' }}
                 >
                   {showAdvanced ? '▼ Hide Metadata Defaults' : '▶ Advanced Metadata Defaults (Optional)'}
                 </button>
 
                 {showAdvanced && (
-                  <div className="grid grid-cols-2 gap-3 mt-3 p-3 bg-[#1e1e2e] rounded border border-[#313244]">
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '12px',
+                      marginTop: '10px',
+                      padding: '12px',
+                      backgroundColor: 'var(--surface-1)',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-subtle)',
+                    }}
+                  >
                     <div>
-                      <label className="block text-[11px] font-medium text-[#a6adc8] mb-1">
+                      <label style={{ display: 'block', fontSize: '11px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '4px' }}>
                         Inference Location
                       </label>
                       <select
                         value={executionLocation}
                         onChange={(e) => setExecutionLocation(e.target.value as AIExecutionLocation)}
-                        className="w-full bg-[#181825] border border-[#313244] rounded px-2 py-1 text-xs text-[#cdd6f4] outline-none"
+                        style={{ width: '100%' }}
                       >
                         <option value="unknown">Unknown</option>
                         <option value="local">Local</option>
@@ -657,13 +733,13 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
                     </div>
 
                     <div>
-                      <label className="block text-[11px] font-medium text-[#a6adc8] mb-1">
+                      <label style={{ display: 'block', fontSize: '11px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '4px' }}>
                         Billing Classification
                       </label>
                       <select
                         value={billingType}
                         onChange={(e) => setBillingType(e.target.value as AIBillingType)}
-                        className="w-full bg-[#181825] border border-[#313244] rounded px-2 py-1 text-xs text-[#cdd6f4] outline-none"
+                        style={{ width: '100%' }}
                       >
                         <option value="unknown">Unknown</option>
                         <option value="local">Local (No charge)</option>
@@ -677,18 +753,26 @@ export const ProviderManagerModal: React.FC<ProviderManagerModalProps> = ({
               </div>
 
               {/* Form Buttons */}
-              <div className="flex justify-end gap-2 pt-3 border-t border-[#313244]">
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  gap: '8px',
+                  paddingTop: '12px',
+                  borderTop: '1px solid var(--border-subtle)',
+                }}
+              >
                 <button
                   type="button"
                   onClick={() => setView('list')}
-                  className="px-3 py-1.5 text-xs text-[#cdd6f4] bg-[#313244] hover:bg-[#45475a] rounded transition-colors"
+                  className="modal-btn modal-btn-secondary"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-4 py-1.5 text-xs text-[#11111b] bg-[#89b4fa] hover:bg-[#b4befe] font-semibold rounded transition-colors"
+                  className="modal-btn modal-btn-primary"
                 >
                   {isSubmitting ? 'Saving...' : view === 'add' ? 'Save Provider' : 'Update Provider'}
                 </button>

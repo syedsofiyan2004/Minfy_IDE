@@ -21,9 +21,14 @@ import {
   LogOut,
   ShieldCheck,
   Settings2,
+  X,
 } from 'lucide-react';
 import { ProviderManagerModal } from './ProviderManagerModal.js';
 import { BedrockConfigModal } from './BedrockConfigModal.js';
+
+export interface AIPanelProps {
+  onClose?: () => void;
+}
 
 interface Message {
   id: string;
@@ -56,7 +61,7 @@ export function mergeCodexStatus(
   );
 }
 
-export const AIPanel: React.FC = () => {
+export const AIPanel: React.FC<AIPanelProps> = ({ onClose }) => {
   const [providers, setProviders] = useState<AIProvider[]>([]);
   const [credentialBackendName, setCredentialBackendName] = useState<string>('Windows Credential Manager');
   const [selectedProvider, setSelectedProvider] = useState<string>(() => {
@@ -397,48 +402,64 @@ export const AIPanel: React.FC = () => {
   return (
     <div
       style={{
-        width: 'var(--sidebar-width)',
+        width: 'var(--ai-panel-width, 360px)',
+        minWidth: '320px',
+        maxWidth: '450px',
         backgroundColor: 'var(--surface-2)',
-        borderRight: '1px solid var(--border-default)',
+        borderLeft: '1px solid var(--border-default)',
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
         userSelect: 'none',
         flexShrink: 0,
+        zIndex: 20,
       }}
     >
       {/* Header */}
       <div
         style={{
-          padding: '8px 12px',
+          height: '35px',
+          padding: '0 12px',
           borderBottom: '1px solid var(--border-subtle)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          backgroundColor: 'var(--surface-2)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <Sparkles size={13} color="var(--minfy-yellow-accent)" />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Sparkles size={14} color="var(--minfy-yellow-accent)" />
           <span
             style={{
               fontSize: '11px',
               fontWeight: 700,
               textTransform: 'uppercase',
               letterSpacing: '0.8px',
-              color: 'var(--text-muted)',
+              color: 'var(--text-primary)',
             }}
           >
             AI Assistant
           </span>
         </div>
 
-        <button
-          onClick={() => loadProviders({ preserveSelection: true })}
-          title="Refresh AI Provider Status"
-          style={{ padding: '3px', borderRadius: '3px', color: 'var(--text-muted)' }}
-        >
-          <RefreshCw size={13} className={loadingProviders ? 'animate-spin' : ''} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <button
+            onClick={() => loadProviders({ preserveSelection: true })}
+            title="Refresh AI Provider Status"
+            style={{ padding: '3px 6px', borderRadius: '3px', color: 'var(--text-muted)' }}
+          >
+            <RefreshCw size={12} className={loadingProviders ? 'animate-spin' : ''} />
+          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              title="Close AI Assistant"
+              style={{ padding: '3px 6px', borderRadius: '3px', color: 'var(--text-muted)' }}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Provider Selector & Status Bar */}

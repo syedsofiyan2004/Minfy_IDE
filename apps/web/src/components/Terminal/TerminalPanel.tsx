@@ -21,6 +21,13 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ workspaceId, isOpe
   const [connected, setConnected] = useState<boolean>(false);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
 
+  const sendResize = useCallback((cols: number, rows: number) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && cols > 0 && rows > 0) {
+      const msg: TerminalClientMessage = { type: 'resize', cols, rows };
+      wsRef.current.send(JSON.stringify(msg));
+    }
+  }, []);
+
   const connectWebSocket = useCallback(async () => {
     if (!workspaceId) return;
 
@@ -45,6 +52,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ workspaceId, isOpe
       ws.onopen = () => {
         setConnected(true);
         term.focus();
+        try {
+          fitAddonRef.current?.fit();
+          sendResize(term.cols, term.rows);
+        } catch {
+          // ignore
+        }
       };
 
       ws.onmessage = (event) => {
@@ -74,7 +87,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ workspaceId, isOpe
       term.write(`\r\n\x1b[31m[Terminal Auth Error: ${err.message || 'Failed to acquire authorization ticket'}]\x1b[0m\r\n`);
       setConnected(false);
     }
-  }, [workspaceId]);
+  }, [workspaceId, sendResize]);
 
   const handleRestart = () => {
     if (termRef.current) {
@@ -124,41 +137,57 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ workspaceId, isOpe
           wsRef.current.send(JSON.stringify(msg));
         }
       });
-
-      setTimeout(() => fitAddon.fit(), 50);
     }
 
     connectWebSocket();
 
-    const handleResize = () => {
+    const doFitAndResize = () => {
       try {
-        fitAddonRef.current?.fit();
+        if (fitAddonRef.current && termRef.current) {
+          fitAddonRef.current.fit();
+          sendResize(termRef.current.cols, termRef.current.rows);
+        }
       } catch {
         // ignore
       }
     };
 
-    window.addEventListener('resize', handleResize);
+    // Use ResizeObserver for accurate sizing on layout shifts
+    let resizeObserver: ResizeObserver | null = null;
+    if (containerRef.current && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        doFitAndResize();
+      });
+      resizeObserver.observe(containerRef.current);
+    }
+
+    window.addEventListener('resize', doFitAndResize);
 
     return () => {
-      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('resize', doFitAndResize);
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
       if (wsRef.current) {
         wsRef.current.close();
       }
     };
-  }, [isOpen, workspaceId, connectWebSocket]);
+  }, [isOpen, workspaceId, connectWebSocket, sendResize]);
 
   useEffect(() => {
-    if (isOpen && fitAddonRef.current) {
+    if (isOpen && fitAddonRef.current && termRef.current) {
       setTimeout(() => {
         try {
           fitAddonRef.current?.fit();
+          if (termRef.current) {
+            sendResize(termRef.current.cols, termRef.current.rows);
+          }
         } catch {
           // ignore
         }
-      }, 100);
+      }, 80);
     }
-  }, [isOpen, isMaximized]);
+  }, [isOpen, isMaximized, sendResize]);
 
   if (!isOpen) return null;
 
@@ -186,20 +215,32 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ workspaceId, isOpe
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '0 8px',
+          padding: '0 10px',
           userSelect: 'none',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: 600 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', fontWeight: 600 }}>
           <TermIcon size={13} color="var(--minfy-blue-primary)" />
           <span style={{ color: 'var(--text-secondary)' }}>TERMINAL</span>
+          <span
+            style={{
+              padding: '1px 5px',
+              borderRadius: '3px',
+              backgroundColor: 'var(--surface-3)',
+              color: 'var(--text-muted)',
+              fontSize: '10px',
+              fontFamily: 'var(--font-mono)',
+            }}
+          >
+            PowerShell
+          </span>
           <div
             style={{
               width: '6px',
               height: '6px',
               borderRadius: '50%',
               backgroundColor: connected ? 'var(--success)' : 'var(--danger)',
-              marginLeft: '4px',
+              boxShadow: connected ? '0 0 6px rgba(63, 185, 80, 0.6)' : 'none',
             }}
             title={connected ? 'Terminal connected' : 'Terminal disconnected'}
           />
@@ -235,7 +276,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ workspaceId, isOpe
         ref={containerRef}
         style={{
           flex: 1,
-          padding: '6px 8px',
+          padding: '4px 6px',
           overflow: 'hidden',
           backgroundColor: '#090d13',
         }}

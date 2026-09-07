@@ -51,6 +51,17 @@ export function App() {
 
   // Panels state
   const [terminalOpen, setTerminalOpen] = useState<boolean>(true);
+  const [aiPanelOpen, setAiPanelOpen] = useState<boolean>(() => {
+    return localStorage.getItem('minfy_ai_panel_open') === 'true';
+  });
+
+  const toggleAiPanel = useCallback(() => {
+    setAiPanelOpen((prev) => {
+      const next = !prev;
+      localStorage.setItem('minfy_ai_panel_open', String(next));
+      return next;
+    });
+  }, []);
 
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -453,8 +464,8 @@ export function App() {
         runtimeConnected={runtimeConnected}
         terminalOpen={terminalOpen}
         onToggleTerminal={() => setTerminalOpen(!terminalOpen)}
-        aiPanelOpen={activeView === 'ai'}
-        onToggleAiPanel={() => setActiveView(activeView === 'ai' ? 'explorer' : 'ai')}
+        aiPanelOpen={aiPanelOpen}
+        onToggleAiPanel={toggleAiPanel}
         onRefreshWorkspace={workspace ? handleFullRefresh : undefined}
       />
 
@@ -464,7 +475,14 @@ export function App() {
           {/* Leftmost Activity Bar (Milestone 2 & 3) */}
           <ActivityBar
             activeView={activeView}
-            onChangeView={setActiveView}
+            onChangeView={(view) => {
+              if (view === 'ai') {
+                toggleAiPanel();
+              } else {
+                setActiveView(view);
+              }
+            }}
+            aiPanelOpen={aiPanelOpen}
             changesCount={intelligence?.git.totalChanges || 0}
           />
 
@@ -501,10 +519,6 @@ export function App() {
             />
           )}
 
-          {activeView === 'ai' && (
-            <AIPanel />
-          )}
-
           {/* Center Editor & Terminal Area */}
           <div className="editor-area-container">
             <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
@@ -528,6 +542,16 @@ export function App() {
               onClose={() => setTerminalOpen(false)}
             />
           </div>
+
+          {/* Right Dedicated AI Panel (Milestone 7.5.1) */}
+          {aiPanelOpen && (
+            <AIPanel
+              onClose={() => {
+                setAiPanelOpen(false);
+                localStorage.setItem('minfy_ai_panel_open', 'false');
+              }}
+            />
+          )}
         </div>
       ) : (
         <WorkspaceSelector

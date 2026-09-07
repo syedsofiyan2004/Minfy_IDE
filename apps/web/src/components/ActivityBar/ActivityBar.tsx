@@ -7,12 +7,14 @@ interface ActivityBarProps {
   activeView: ActivityView;
   onChangeView: (view: ActivityView) => void;
   changesCount: number;
+  aiPanelOpen?: boolean;
 }
 
 export const ActivityBar: React.FC<ActivityBarProps> = ({
   activeView,
   onChangeView,
   changesCount,
+  aiPanelOpen,
 }) => {
   return (
     <aside
@@ -142,21 +144,21 @@ export const ActivityBar: React.FC<ActivityBarProps> = ({
         <Layers size={18} />
       </button>
 
-      {/* AI Provider Action (Milestone 3) */}
+      {/* AI Provider Action (Milestone 3 & 7.5.1) */}
       <button
         onClick={() => onChangeView('ai')}
-        title="AI Assistant (Ollama Local)"
+        title="AI Assistant"
         style={{
           width: '38px',
           height: '38px',
           borderRadius: '6px',
-          backgroundColor: activeView === 'ai' ? 'var(--surface-2)' : 'transparent',
-          color: activeView === 'ai' ? 'var(--minfy-yellow-accent)' : 'var(--text-muted)',
+          backgroundColor: (activeView === 'ai' || aiPanelOpen) ? 'var(--surface-2)' : 'transparent',
+          color: (activeView === 'ai' || aiPanelOpen) ? 'var(--minfy-yellow-accent)' : 'var(--text-muted)',
           position: 'relative',
           marginBottom: '4px',
         }}
       >
-        {activeView === 'ai' && (
+        {(activeView === 'ai' || aiPanelOpen) && (
           <div
             style={{
               position: 'absolute',
